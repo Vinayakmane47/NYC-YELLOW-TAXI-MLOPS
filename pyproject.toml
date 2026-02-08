@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "apache-airflow>=2.10.4",
     "numpy>=2.4.2",
     "pandas>=3.0.0",
     "pyspark>=4.1.1",

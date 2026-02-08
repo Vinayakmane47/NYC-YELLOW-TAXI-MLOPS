@@ -208,3 +208,19 @@ __marimo__/
 /data/
 /silver/
 /gold/
+
+# Airflow
+airflow/logs/
+airflow/__pycache__/
+airflow/*.pid
+airflow/*.err
+airflow/*.log
+airflow/*.cfg
+airflow/airflow.db
+airflow/airflow.db-shm
+airflow/airflow.db-wal
+airflow/webserver_config.py
+airflow/unittests.cfg
+
+# Docker & PostgreSQL
+postgres-db-volume/
