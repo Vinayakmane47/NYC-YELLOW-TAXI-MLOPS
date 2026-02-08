@@ -20,9 +20,29 @@ A complete MLOps pipeline for NYC Yellow Taxi trip data processing and analysis 
 ├── data/                        # Raw data (Bronze layer)
 ├── silver/                      # Cleaned data (Silver layer)
 ├── gold/                        # Feature-engineered data (Gold layer)
-├── docker-compose.yml           # Docker services (Airflow + PostgreSQL)
+├── docker-compose.yml           # Docker services configuration
+├── Dockerfile.airflow           # Airflow + Spark client image
+├── Dockerfile.spark             # Standalone Spark worker image
 └── env.example                  # Environment variables template
 ```
+
+## Docker Architecture
+
+### Dockerfile.airflow
+Custom Airflow image with Spark client capabilities:
+- **Base**: Apache Airflow 2.8.2
+- **Purpose**: Orchestration and DAG execution
+- **Includes**: Java 17, Spark submit client, PySpark, AWS JARs
+- **Use case**: Running Airflow webserver, scheduler, and triggering Spark jobs
+
+### Dockerfile.spark
+Standalone Spark image for distributed processing:
+- **Base**: Python 3.9 slim
+- **Purpose**: Spark worker/master for distributed computing
+- **Includes**: Full Spark 3.4.1, Java 17, PySpark, data processing libraries
+- **Use case**: Standalone Spark cluster or local Spark jobs
+
+**Current Setup**: Using `Dockerfile.airflow` for all Airflow services with embedded Spark.
 
 ## Data Pipeline Stages
 
@@ -66,12 +86,25 @@ cp env.example .env
 # Edit .env file to customize configuration (optional)
 nano .env
 
+# Build custom Airflow image from Dockerfile.airflow
+docker compose build
+
 # Initialize Airflow (first time only)
-docker-compose up airflow-init
+docker compose up airflow-init
 
 # Start Airflow services
-docker-compose up -d
+docker compose up -d
 ```
+
+**Note**: The custom Docker image includes:
+- **Java 17** (OpenJDK) for Spark execution
+- **Apache Spark 3.4.1** with Hadoop 3
+- **PySpark 3.4.1** matching Spark version
+- **NumPy, Pandas, PyArrow** for data processing
+- **AWS/S3 JARs** (hadoop-aws, aws-java-sdk-bundle) for MinIO/S3 connectivity
+- **DVC, Boto3, S3FS** for data versioning and cloud storage
+- **Pydantic, PyYAML** for configuration management
+- **Apache Airflow Spark Provider** for Spark job orchestration
 
 ### 3. Access Airflow Web UI
 
@@ -119,20 +152,26 @@ python src/data_transformation.py
 ## Docker Commands
 
 ```bash
+# Build custom image
+docker compose build
+
 # Start all services
-docker-compose up -d
+docker compose up -d
 
 # Stop all services
-docker-compose down
+docker compose down
 
 # View logs
-docker-compose logs -f
+docker compose logs -f
 
 # Stop and remove volumes (clean slate)
-docker-compose down -v
+docker compose down -v
 
 # Restart a specific service
-docker-compose restart airflow-scheduler
+docker compose restart airflow-scheduler
+
+# Rebuild and restart services
+docker compose up -d --build
 ```
 
 ## Configuration
@@ -173,35 +212,45 @@ Each pipeline stage generates a `metadata.json` file containing:
 **Airflow services not starting:**
 ```bash
 # Check logs
-docker-compose logs airflow-webserver
-docker-compose logs airflow-scheduler
+docker compose logs airflow-webserver
+docker compose logs airflow-scheduler
 
 # Verify permissions
 ls -la airflow/
+
+# Rebuild image if needed
+docker compose build --no-cache
 ```
 
 **Import errors in DAGs:**
 ```bash
 # Ensure src/ is mounted in docker-compose.yml
 # Check PYTHONPATH in Airflow container
-docker-compose exec airflow-webserver python -c "import sys; print(sys.path)"
+docker compose exec airflow-webserver python -c "import sys; print(sys.path)"
+
+# Verify packages are installed
+docker compose exec airflow-webserver pip list | grep pyspark
 ```
 
 **PostgreSQL connection issues:**
 ```bash
 # Verify PostgreSQL is healthy
-docker-compose ps postgres
-docker-compose logs postgres
+docker compose ps postgres
+docker compose logs postgres
 ```
 
 ## Tech Stack
 
-- **Apache Airflow 2.10.4**: Workflow orchestration
+- **Apache Airflow 2.8.2**: Workflow orchestration
+- **Apache Spark 3.4.1**: Distributed data processing engine
+- **PySpark 3.4.1**: Python API for Spark
 - **PostgreSQL 16**: Airflow metadata database
-- **PySpark 4.1.1**: Distributed data processing
+- **Java 17 (OpenJDK)**: Required for Spark execution
 - **Docker Compose**: Container orchestration
-- **Python 3.11**: Core language
-- **uv**: Package management
+- **Python 3.9+**: Core language
+- **AWS SDK / Hadoop AWS**: S3/MinIO connectivity
+- **DVC**: Data version control
+- **uv**: Package management (local development)
 
 ## License
 

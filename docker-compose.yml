@@ -1,8 +1,9 @@
-version: '3.8'
-
 x-airflow-common:
   &airflow-common
-  image: apache/airflow:2.10.4-python3.11
+  build:
+    context: .
+    dockerfile: Dockerfile.airflow
+  image: nyc-taxi-airflow:latest
   environment:
     &airflow-common-env
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
@@ -13,8 +14,11 @@ x-airflow-common:
     AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
     AIRFLOW__WEBSERVER__SECRET_KEY: 'your-secret-key-change-this'
-    PYTHONPATH: '/opt/airflow:/opt/airflow/src'
-    _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-}
+    PYTHONPATH: '/opt/airflow:/opt/airflow/src:/opt/spark/python:/opt/spark/python/lib/py4j-0.10.9.7-src.zip'
+    JAVA_HOME: '/usr/lib/jvm/java-17-openjdk-amd64'
+    SPARK_HOME: '/opt/spark'
+    SPARK_VERSION: '3.4.1'
+    HADOOP_VERSION: '3'
   volumes:
     - ${AIRFLOW_PROJ_DIR:-.}/airflow/dags:/opt/airflow/dags
     - ${AIRFLOW_PROJ_DIR:-.}/airflow/logs:/opt/airflow/logs

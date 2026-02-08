@@ -39,6 +39,12 @@ if ! docker info > /dev/null 2>&1; then
 fi
 echo "✓ Docker is running"
 
+# Build the custom Airflow image
+echo ""
+echo "Building custom Airflow image with Spark and Java (this may take a few minutes)..."
+docker compose build
+echo "✓ Image built successfully"
+
 # Initialize Airflow
 echo ""
 echo "Initializing Airflow (this may take a few minutes)..."

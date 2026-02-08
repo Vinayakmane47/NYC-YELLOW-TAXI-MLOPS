@@ -5,6 +5,7 @@ help:
 	@echo ""
 	@echo "Setup & Installation:"
 	@echo "  make install    - Install Python dependencies using uv"
+	@echo "  make build      - Build custom Airflow Docker image"
 	@echo "  make setup      - Setup Airflow with Docker Compose"
 	@echo ""
 	@echo "Docker Commands:"
@@ -25,13 +26,17 @@ install:
 	@echo "Installing Python dependencies with uv..."
 	uv sync
 
-setup:
+build:
+	@echo "Building custom Airflow image..."
+	docker compose build
+
+setup: build
 	@echo "Setting up Airflow..."
 	./setup_airflow.sh
 
 up:
 	@echo "Starting Airflow services..."
-	docker-compose up -d
+	docker compose up -d
 	@echo "Airflow Web UI: http://localhost:8080"
 
 down:

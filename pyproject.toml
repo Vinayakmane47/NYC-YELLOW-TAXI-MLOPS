@@ -1,13 +1,20 @@
 [project]
 name = "nyc-yellow-taxi-mlops"
 version = "0.1.0"
-description = "Add your description here"
+description = "NYC Yellow Taxi MLOps Pipeline with Airflow and Spark"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.9"
 dependencies = [
-    "apache-airflow>=2.10.4",
-    "numpy>=2.4.2",
-    "pandas>=3.0.0",
-    "pyspark>=4.1.1",
+    "apache-airflow>=2.8.2",
+    "pyspark==3.4.1",
+    "numpy>=1.26.0",
+    "pandas>=2.1.0",
+    "boto3>=1.34.0",
+    "s3fs>=2024.2.0",
+    "pydantic>=2.5.0",
+    "pydantic-settings>=2.1.0",
+    "pyarrow>=14.0.0",
+    "PyYAML>=6.0.1",
     "ruff>=0.15.0",
+    "scikit-learn>=1.6.1",
 ]
