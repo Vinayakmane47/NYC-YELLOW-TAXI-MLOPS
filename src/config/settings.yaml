@@ -1,0 +1,73 @@
+# ---------------------------------------------------------------------------
+# MLflow / DagShub connection
+# ---------------------------------------------------------------------------
+tracking:
+  tracking_uri: "https://dagshub.com/Vinayakmane47/NYC-YELLOW-TAXI-MLOPS.mlflow/"
+  username: "Vinayakmane47"
+  repo_name: "NYC-YELLOW-TAXI-MLOPS"
+  token_env_key: "DAGSHUB_TOKEN"
+  env_file_path: ".env"
+
+# ---------------------------------------------------------------------------
+# Shared ML data paths used by training/evaluation
+# ---------------------------------------------------------------------------
+data:
+  train_path: "ml_transformed/train.parquet"
+  val_path: "ml_transformed/val.parquet"
+  test_path: "ml_transformed/test.parquet"
+  target_col: "trip_duration_min"
+  trained_on_range: "2023-01 to 2025-12"
+  max_rows_train: 100000
+  max_rows_val: 30000
+  max_rows_test: 30000
+  sample_fraction: null
+
+# ---------------------------------------------------------------------------
+# Main pipeline stage settings
+# ---------------------------------------------------------------------------
+ingestion:
+  year: 2025
+  input_dir: "data"
+
+validation:
+  input_dir: "data"
+
+preprocessing:
+  input_dir: "data"
+  output_dir: "silver"
+
+transformation:
+  input_dir: "silver"
+  output_dir: "gold"
+
+ml_transformation:
+  input_dir: "gold"
+  output_dir: "ml_transformed"
+  max_rows: 1000000
+
+# ---------------------------------------------------------------------------
+# Promotion policy used in model_evaluation.py
+# ---------------------------------------------------------------------------
+evaluation:
+  min_rmse_improvement: 0.0
+  max_mae_regression: 0.0
+  max_r2_regression: 0.0
+
+# ---------------------------------------------------------------------------
+# Main model training / evaluation settings
+# ---------------------------------------------------------------------------
+training:
+  random_state: 42
+  models_dir: "artifacts/models"
+  champion_config_path: "src/mlflow/champion.json"
+  metric_thresholds:
+    min_r2: 0.0
+    max_rmse: 999999.0
+    max_mae: 999999.0
+
+# ---------------------------------------------------------------------------
+# Shared pipeline metadata output (used by Airflow stages)
+# ---------------------------------------------------------------------------
+metadata:
+  base_dir: "src/metadata"
+  pipeline_run_env_key: "PIPELINE_RUN_ID"

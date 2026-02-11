@@ -8,9 +8,11 @@ from pyspark.sql import DataFrame, functions as F
 
 from utils.spark_utils import (
     SparkUtils,
+    build_stage_metadata,
     collect_dataframe_metadata,
     collect_file_sizes,
-    write_metadata_json,
+    get_pipeline_run_id,
+    write_stage_metadata,
 )
 
 
@@ -180,51 +182,86 @@ class DataTransformation:
 
     def process_all(self) -> None:
         run_start = datetime.now(timezone.utc)
+        pipeline_run_id = get_pipeline_run_id()
+        status = "success"
+        error = None
         input_files = self._list_input_files()
         if not input_files:
             print(f"No parquet files found under {self.input_dir}")
             run_end = datetime.now(timezone.utc)
-            metadata = {
-                "stage": "transformation",
-                "run_id": run_start.isoformat(),
-                "started_at": run_start.isoformat(),
-                "finished_at": run_end.isoformat(),
-                "duration_seconds": (run_end - run_start).total_seconds(),
-                "inputs": {"root_dir": str(self.input_dir), "files": []},
-                "outputs": {"root_dir": str(self.output_dir), "files": [], "total_bytes": 0},
-                "summary": {"processed_files": 0},
-            }
-            write_metadata_json(metadata, self.output_dir)
+            metadata = build_stage_metadata(
+                stage="data_transformation",
+                pipeline_run_id=pipeline_run_id,
+                run_id=run_start.isoformat(),
+                created_at_utc=run_end.isoformat(),
+                data_rows={"processed_files": 0},
+                metrics={"duration_seconds": (run_end - run_start).total_seconds()},
+                artifacts={
+                    "input_root_dir": str(self.input_dir),
+                    "output_root_dir": str(self.output_dir),
+                    "files": [],
+                    "total_bytes": 0,
+                },
+                status=status,
+                error=error,
+            )
+            write_stage_metadata(
+                stage_file_name="data_transformation.json",
+                metadata=metadata,
+                pipeline_run_id=pipeline_run_id,
+            )
             return
 
-        print(f"Found {len(input_files)} files. Writing features to {self.output_dir}")
         output_files: List[Path] = []
-        for input_path in input_files:
-            rel_path = input_path.relative_to(self.input_dir)
-            output_path = self.output_dir / rel_path
-            print(f"Processing {input_path} -> {output_path}")
-            df = self.spark.read.parquet(str(input_path))
-            transformed = self._apply_feature_engineering(df)
-            self._write_single_parquet(transformed, output_path)
-            output_files.append(output_path)
+        data_profile = {}
+        try:
+            print(f"Found {len(input_files)} files. Writing features to {self.output_dir}")
+            for input_path in input_files:
+                rel_path = input_path.relative_to(self.input_dir)
+                output_path = self.output_dir / rel_path
+                print(f"Processing {input_path} -> {output_path}")
+                df = self.spark.read.parquet(str(input_path))
+                transformed = self._apply_feature_engineering(df)
+                self._write_single_parquet(transformed, output_path)
+                output_files.append(output_path)
 
-        run_end = datetime.now(timezone.utc)
-        metadata = {
-            "stage": "transformation",
-            "run_id": run_start.isoformat(),
-            "started_at": run_start.isoformat(),
-            "finished_at": run_end.isoformat(),
-            "duration_seconds": (run_end - run_start).total_seconds(),
-            "inputs": {"root_dir": str(self.input_dir), **collect_file_sizes(input_files)},
-            "outputs": {"root_dir": str(self.output_dir), **collect_file_sizes(output_files)},
-            "summary": {"processed_files": len(output_files)},
-        }
-
-        if output_files:
-            df = self.spark.read.parquet(*[str(path) for path in output_files])
-            metadata["data_profile"] = collect_dataframe_metadata(df)
-
-        write_metadata_json(metadata, self.output_dir)
+            if output_files:
+                df = self.spark.read.parquet(*[str(path) for path in output_files])
+                data_profile = collect_dataframe_metadata(df)
+        except Exception as exc:  # noqa: BLE001
+            status = "failed"
+            error = str(exc)
+            raise
+        finally:
+            run_end = datetime.now(timezone.utc)
+            metadata = build_stage_metadata(
+                stage="data_transformation",
+                pipeline_run_id=pipeline_run_id,
+                run_id=run_start.isoformat(),
+                created_at_utc=run_end.isoformat(),
+                data_rows={
+                    "input_files": len(input_files),
+                    "processed_files": len(output_files),
+                },
+                metrics={
+                    "duration_seconds": (run_end - run_start).total_seconds(),
+                    "data_profile": data_profile,
+                },
+                artifacts={
+                    "input_root_dir": str(self.input_dir),
+                    "output_root_dir": str(self.output_dir),
+                    "input_sizes": collect_file_sizes(input_files),
+                    "output_sizes": collect_file_sizes(output_files),
+                },
+                status=status,
+                error=error,
+            )
+            metadata_path = write_stage_metadata(
+                stage_file_name="data_transformation.json",
+                metadata=metadata,
+                pipeline_run_id=pipeline_run_id,
+            )
+            print(f"[data_transformation] metadata saved to {metadata_path}")
 
         print("Data transformation completed.")
 

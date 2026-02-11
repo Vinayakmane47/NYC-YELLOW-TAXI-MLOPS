@@ -1,7 +1,7 @@
 """
 Pydantic configuration models for the NYC Yellow Taxi MLOps pipeline.
 
-Single source of truth: loads and validates config_mlflow.yaml and champion.json.
+Single source of truth: loads and validates settings.yaml and champion.json.
 All pipeline stages (training, evaluation, registry) use these typed models
 instead of raw dict access.
 """
@@ -55,33 +55,42 @@ class MetricThresholds(BaseModel):
 
 
 class TrainingConfig(BaseModel):
-    """HPO and artifact settings."""
+    """Main model training settings."""
 
-    n_trials_per_model: int = 25
     random_state: int = 42
-    models_dir: str = "src/mlflow/models"
+    models_dir: str = "artifacts/models"
     champion_config_path: str = "src/mlflow/champion.json"
     metric_thresholds: MetricThresholds = Field(default_factory=MetricThresholds)
     model_config = {"extra": "forbid"}
 
 
-class ScreeningConfig(BaseModel):
-    """Model screening stage settings."""
-
-    top_n_for_hpo: int = 3
-    row_cap_train: int = 100_000
-    row_cap_val: int = 50_000
+class IngestionConfig(BaseModel):
+    year: int = 2025
+    input_dir: str = "data"
     model_config = {"extra": "forbid"}
 
 
-class ModelConfig(BaseModel):
-    """Configuration for a single model family."""
+class ValidationConfig(BaseModel):
+    input_dir: str = "data"
+    model_config = {"extra": "forbid"}
 
-    name: str
-    enabled: bool = True
-    screening_fixed_params: Dict[str, Any] = Field(default_factory=dict)
-    search_space: Dict[str, Any] = Field(default_factory=dict)
-    fixed_params: Dict[str, Any] = Field(default_factory=dict)
+
+class PreprocessingConfig(BaseModel):
+    input_dir: str = "data"
+    output_dir: str = "silver"
+    model_config = {"extra": "forbid"}
+
+
+class TransformationConfig(BaseModel):
+    input_dir: str = "silver"
+    output_dir: str = "gold"
+    model_config = {"extra": "forbid"}
+
+
+class MlTransformConfig(BaseModel):
+    input_dir: str = "gold"
+    output_dir: str = "ml_transformed"
+    max_rows: int = 1_000_000
     model_config = {"extra": "forbid"}
 
 
@@ -99,32 +108,45 @@ class EvaluationPolicyConfig(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class MetadataConfig(BaseModel):
+    """
+    Shared metadata output settings for Airflow DAG stages.
+    """
+
+    base_dir: str = "src/metadata"
+    pipeline_run_env_key: str = "PIPELINE_RUN_ID"
+    model_config = {"extra": "forbid"}
+
+
 # ---------------------------------------------------------------------------
 # Root pipeline config
 # ---------------------------------------------------------------------------
 
 
 class PipelineConfig(BaseModel):
-    """Root config loaded from config_mlflow.yaml.
+    """Root config loaded from settings.yaml.
 
     Usage::
 
-        config = PipelineConfig.from_yaml("src/mlflow/config_mlflow.yaml")
+        config = PipelineConfig.from_yaml("src/config/settings.yaml")
         print(config.tracking.tracking_uri)
     """
 
     tracking: TrackingConfig
     data: DataConfig
     training: TrainingConfig
-    screening: ScreeningConfig
+    ingestion: IngestionConfig = Field(default_factory=IngestionConfig)
+    validation: ValidationConfig = Field(default_factory=ValidationConfig)
+    preprocessing: PreprocessingConfig = Field(default_factory=PreprocessingConfig)
+    transformation: TransformationConfig = Field(default_factory=TransformationConfig)
+    ml_transformation: MlTransformConfig = Field(default_factory=MlTransformConfig)
     evaluation: EvaluationPolicyConfig = Field(default_factory=EvaluationPolicyConfig)
-    models_to_train: List[ModelConfig] = Field(default_factory=list)
-    screening_models: List[ModelConfig] = Field(default_factory=list)
+    metadata: MetadataConfig = Field(default_factory=MetadataConfig)
 
     model_config = {"extra": "forbid"}
 
     @classmethod
-    def from_yaml(cls, path: str = "src/mlflow/config_mlflow.yaml") -> "PipelineConfig":
+    def from_yaml(cls, path: str = "src/config/settings.yaml") -> "PipelineConfig":
         """Load, parse, and validate the YAML config file."""
         config_path = Path(path)
         if not config_path.exists():
@@ -132,22 +154,6 @@ class PipelineConfig(BaseModel):
         with config_path.open("r", encoding="utf-8") as f:
             raw = yaml.safe_load(f)
         return cls.model_validate(raw)
-
-    @property
-    def enabled_hpo_models(self) -> List[ModelConfig]:
-        """Return only enabled models that have a search space (HPO-eligible)."""
-        return [m for m in self.models_to_train if m.enabled and m.search_space]
-
-    @property
-    def enabled_screening_models(self) -> List[ModelConfig]:
-        """Return only enabled screening-only models."""
-        return [m for m in self.screening_models if m.enabled]
-
-    @property
-    def all_enabled_models(self) -> List[ModelConfig]:
-        """Return all enabled models (HPO + screening-only)."""
-        return [m for m in self.models_to_train if m.enabled] + self.enabled_screening_models
-
 
 # ---------------------------------------------------------------------------
 # Champion config (output of screening / HPO)

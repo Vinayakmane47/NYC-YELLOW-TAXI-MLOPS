@@ -10,7 +10,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Type
+from typing import Any, Dict, List, Optional, Tuple, Type
 
 import numpy as np
 import optuna
@@ -32,10 +32,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.mlflow.config_schema import MlflowPipelineConfig
 from src.utils.spark_utils import SparkUtils
-
-if TYPE_CHECKING:
-    from src.config.config import PipelineConfig
 
 
 def _load_external_mlflow():
@@ -224,7 +222,7 @@ class QualityGate:
     """MLOps quality gate that validates model metrics against thresholds.
 
     Default thresholds (r2>=0, rmse/mae<=999999) are intentionally permissive
-    so the gate is opt-in: tighten values in config_mlflow.yaml when ready.
+    so the gate is opt-in: tighten values in settings.yaml when ready.
     """
 
     def __init__(self, min_r2: float, max_rmse: float, max_mae: float) -> None:
@@ -262,16 +260,13 @@ class QualityGate:
 class HyperparameterTuner:
     def __init__(
         self,
-        config: Optional["PipelineConfig"] = None,
+        config: Optional["MlflowPipelineConfig"] = None,
         config_path: str = DEFAULT_CONFIG_PATH,
     ) -> None:
-        # Lazy import to avoid circular dependency at module level.
-        from src.config.config import PipelineConfig
-
         if config is not None:
             self.config = config
         else:
-            self.config = PipelineConfig.from_yaml(config_path)
+            self.config = MlflowPipelineConfig.from_yaml(config_path)
 
         self.config_path = config_path
 
@@ -890,9 +885,7 @@ class HyperparameterTuner:
 
 
 def main() -> None:
-    from src.config.config import PipelineConfig
-
-    config = PipelineConfig.from_yaml(DEFAULT_CONFIG_PATH)
+    config = MlflowPipelineConfig.from_yaml(DEFAULT_CONFIG_PATH)
     tuner = HyperparameterTuner(config=config)
     try:
         result = tuner.run()

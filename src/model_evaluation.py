@@ -31,10 +31,16 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.config.config import ChampionConfig, PipelineConfig
-from src.mlflow.mlflow import QualityGate, _load_external_mlflow
-from src.utils.spark_utils import SparkUtils
+from src.utils.mlflow_client import load_external_mlflow
+from src.utils.quality_gate import QualityGate
+from src.utils.spark_utils import (
+    SparkUtils,
+    build_stage_metadata,
+    get_pipeline_run_id,
+    write_stage_metadata,
+)
 
-mlflow = _load_external_mlflow()
+mlflow = load_external_mlflow()
 importlib.import_module("mlflow.sklearn")
 
 
@@ -103,15 +109,17 @@ class ModelEvaluationPipeline:
         self.config = pipeline_config
         self.champion = champion_config
         self.timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        self.pipeline_run_id = (
-            self.champion.mlflow.pipeline_run_id
-            if self.champion.mlflow and self.champion.mlflow.pipeline_run_id
-            else (
-                self.champion.mlflow.experiment_name
-                if self.champion.mlflow and self.champion.mlflow.experiment_name
-                else f"pipeline_{self.timestamp}"
+        self.pipeline_run_id = get_pipeline_run_id(strict=False)
+        if not self.pipeline_run_id:
+            self.pipeline_run_id = (
+                self.champion.mlflow.pipeline_run_id
+                if self.champion.mlflow and self.champion.mlflow.pipeline_run_id
+                else (
+                    self.champion.mlflow.experiment_name
+                    if self.champion.mlflow and self.champion.mlflow.experiment_name
+                    else self.timestamp
+                )
             )
-        )
         self.spark = SparkUtils(app_name="nyc-taxi-pipeline-evaluation").spark
         self._setup_mlflow()
 
@@ -300,12 +308,7 @@ class ModelEvaluationPipeline:
     # -- Filesystem ----------------------------------------------------------
 
     def _metadata_path(self) -> Path:
-        return (
-            Path(self.config.training.champion_config_path).parent
-            / "experiments"
-            / self.pipeline_run_id
-            / "evaluation_metadata.json"
-        )
+        return Path("src/metadata") / f"pipeline_{self.pipeline_run_id}" / "model_evaluation.json"
 
     # -- Main pipeline -------------------------------------------------------
 
@@ -416,16 +419,14 @@ class ModelEvaluationPipeline:
                 timestamp_utc=self.timestamp,
             )
 
-            metadata = {
-                "stage": "model_evaluation",
-                "pipeline_run_id": self.pipeline_run_id,
-                "run_id": run.info.run_id,
-                "experiment_name": self.EXPERIMENT_NAME,
-                "created_at_utc": self.timestamp,
-                "data_rows": {
-                    "test_rows": len(x_test),
-                },
-                "metrics": {
+            metadata = build_stage_metadata(
+                stage="model_evaluation",
+                pipeline_run_id=self.pipeline_run_id,
+                run_id=run.info.run_id,
+                experiment_name=self.EXPERIMENT_NAME,
+                created_at_utc=self.timestamp,
+                data_rows={"test_rows": len(x_test)},
+                metrics={
                     "new_model": new_metrics,
                     "registered_model": old_metrics,
                     "deltas": {
@@ -434,22 +435,27 @@ class ModelEvaluationPipeline:
                         "r2": (new_metrics["r2"] - old_metrics["r2"]) if old_metrics else None,
                     },
                 },
-                "artifacts": {
+                artifacts={
                     "metadata_path": str(meta_path),
                     "champion_path": self.config.training.champion_config_path,
                 },
-                "quality_gate_passed": gate_result.passed,
-                "is_new_better": comparison.is_new_better,
-                "should_register": should_register,
-                "decision_reason": comparison.decision_reason,
-                "policy_summary": comparison.summary,
-                "policy_metric_details": [asdict(mc) for mc in comparison.metric_comparisons],
-                "model_family": self.champion.model_family,
-            }
-
-            with meta_path.open("w", encoding="utf-8") as f:
-                json.dump(metadata, f, indent=2, sort_keys=False)
-                f.write("\n")
+                status="success",
+                error=None,
+                extra={
+                    "quality_gate_passed": gate_result.passed,
+                    "is_new_better": comparison.is_new_better,
+                    "should_register": should_register,
+                    "decision_reason": comparison.decision_reason,
+                    "policy_summary": comparison.summary,
+                    "policy_metric_details": [asdict(mc) for mc in comparison.metric_comparisons],
+                    "model_family": self.champion.model_family,
+                },
+            )
+            meta_path = write_stage_metadata(
+                stage_file_name="model_evaluation.json",
+                metadata=metadata,
+                pipeline_run_id=self.pipeline_run_id,
+            )
             mlflow.log_artifact(str(meta_path))
 
             # 9. Update champion_config with test metrics

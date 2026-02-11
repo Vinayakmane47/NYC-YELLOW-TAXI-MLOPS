@@ -25,9 +25,10 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.config.config import ChampionConfig, PipelineConfig
-from src.mlflow.mlflow import _load_external_mlflow
+from src.utils.mlflow_client import load_external_mlflow
+from src.utils.spark_utils import build_stage_metadata, get_pipeline_run_id, write_stage_metadata
 
-mlflow = _load_external_mlflow()
+mlflow = load_external_mlflow()
 mlflow_client = importlib.import_module("mlflow.tracking").MlflowClient
 
 
@@ -76,15 +77,17 @@ class ModelRegistryPipeline:
         self.config = pipeline_config
         self.champion = champion_config
         self.timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        self.pipeline_run_id = (
-            self.champion.mlflow.pipeline_run_id
-            if self.champion.mlflow and self.champion.mlflow.pipeline_run_id
-            else (
-                self.champion.mlflow.experiment_name
-                if self.champion.mlflow and self.champion.mlflow.experiment_name
-                else f"pipeline_{self.timestamp}"
+        self.pipeline_run_id = get_pipeline_run_id(strict=False)
+        if not self.pipeline_run_id:
+            self.pipeline_run_id = (
+                self.champion.mlflow.pipeline_run_id
+                if self.champion.mlflow and self.champion.mlflow.pipeline_run_id
+                else (
+                    self.champion.mlflow.experiment_name
+                    if self.champion.mlflow and self.champion.mlflow.experiment_name
+                    else self.timestamp
+                )
             )
-        )
         self._setup_mlflow()
         self.client = mlflow_client(tracking_uri=self.config.tracking.tracking_uri)
 
@@ -124,10 +127,9 @@ class ModelRegistryPipeline:
     def _load_evaluation_metadata(self) -> Dict[str, Any]:
         """Load evaluation_metadata.json from the pipeline experiments dir."""
         meta_path = (
-            Path(self.config.training.champion_config_path).parent
-            / "experiments"
-            / self.pipeline_run_id
-            / "evaluation_metadata.json"
+            Path("src/metadata")
+            / f"pipeline_{self.pipeline_run_id}"
+            / "model_evaluation.json"
         )
         if not meta_path.exists():
             raise FileNotFoundError(
@@ -140,10 +142,9 @@ class ModelRegistryPipeline:
     def _find_training_run_id(self) -> str:
         """Find the training run ID from training_metadata.json."""
         meta_path = (
-            Path(self.config.training.champion_config_path).parent
-            / "experiments"
-            / self.pipeline_run_id
-            / "training_metadata.json"
+            Path("src/metadata")
+            / f"pipeline_{self.pipeline_run_id}"
+            / "model_training.json"
         )
         if not meta_path.exists():
             raise FileNotFoundError(
@@ -152,7 +153,7 @@ class ModelRegistryPipeline:
             )
         with meta_path.open("r", encoding="utf-8") as f:
             data = json.load(f)
-        return data["mlflow_run_id"]
+        return data["run_id"]
 
     # -- Registry operations -------------------------------------------------
 
@@ -202,12 +203,7 @@ class ModelRegistryPipeline:
     # -- Filesystem ----------------------------------------------------------
 
     def _metadata_path(self) -> Path:
-        return (
-            Path(self.config.training.champion_config_path).parent
-            / "experiments"
-            / self.pipeline_run_id
-            / "registry_metadata.json"
-        )
+        return Path("src/metadata") / f"pipeline_{self.pipeline_run_id}" / "model_registry.json"
 
     def _validate_evaluation_preflight(self, eval_meta: Dict[str, Any]) -> None:
         required = ["stage", "pipeline_run_id", "should_register"]
@@ -237,7 +233,7 @@ class ModelRegistryPipeline:
         if not should_register:
             reason = (
                 "Evaluation decided not to register. "
-                f"New model better: {eval_meta.get('comparison', {}).get('is_new_better')}. "
+                f"New model better: {eval_meta.get('is_new_better')}. "
                 f"Quality gate passed: {quality_gate_passed}."
             )
             print(f"[registry] skipping registration: {reason}")
@@ -340,16 +336,6 @@ class ModelRegistryPipeline:
         meta_path.parent.mkdir(parents=True, exist_ok=True)
 
         metadata = {
-            "stage": "model_registry",
-            "pipeline_run_id": self.pipeline_run_id,
-            "run_id": result.run_id,
-            "experiment_name": self.EXPERIMENT_NAME,
-            "created_at_utc": result.timestamp_utc,
-            "data_rows": {},
-            "metrics": {},
-            "artifacts": {
-                "metadata_path": str(meta_path),
-            },
             "registered": result.registered,
             "model_name": result.model_name,
             "version": result.version,
@@ -357,10 +343,24 @@ class ModelRegistryPipeline:
             "previous_version": result.previous_version,
             "reason": result.reason,
         }
-
-        with meta_path.open("w", encoding="utf-8") as f:
-            json.dump(metadata, f, indent=2, sort_keys=False)
-            f.write("\n")
+        payload = build_stage_metadata(
+            stage="model_registry",
+            pipeline_run_id=self.pipeline_run_id,
+            run_id=result.run_id,
+            experiment_name=self.EXPERIMENT_NAME,
+            created_at_utc=result.timestamp_utc,
+            data_rows={},
+            metrics={},
+            artifacts={"metadata_path": str(meta_path)},
+            status="success" if result.registered else "skipped",
+            error=None,
+            extra=metadata,
+        )
+        meta_path = write_stage_metadata(
+            stage_file_name="model_registry.json",
+            metadata=payload,
+            pipeline_run_id=self.pipeline_run_id,
+        )
         print(f"[registry] metadata saved to {meta_path}")
 
     def close(self) -> None:

@@ -1,5 +1,7 @@
 import json
+import os
 from pathlib import Path
+from datetime import datetime, timezone
 from typing import Dict, Iterable, List, Any
 
 from pyspark.sql import SparkSession, DataFrame, functions as F
@@ -102,3 +104,80 @@ def write_metadata_json(metadata: Dict[str, Any], output_dir: Path, filename: st
     with metadata_path.open("w", encoding="utf-8") as handle:
         json.dump(metadata, handle, indent=2, sort_keys=True, default=_safe_json_value)
         handle.write("\n")
+
+
+def get_pipeline_run_id(env_key: str = "PIPELINE_RUN_ID", strict: bool = True) -> str:
+    """
+    Read a shared pipeline run id from environment.
+    In Airflow, this should be injected once per DAG run and passed to every stage.
+    """
+    value = os.getenv(env_key, "").strip()
+    if value:
+        return value
+    if strict:
+        raise ValueError(
+            f"Missing required environment variable '{env_key}'. "
+            "Set it in Airflow so all stages write to the same metadata folder."
+        )
+    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+
+def get_pipeline_metadata_dir(
+    pipeline_run_id: str,
+    base_dir: str = "src/metadata",
+) -> Path:
+    metadata_dir = Path(base_dir) / f"pipeline_{pipeline_run_id}"
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+    return metadata_dir
+
+
+def build_stage_metadata(
+    *,
+    stage: str,
+    pipeline_run_id: str,
+    run_id: str,
+    experiment_name: str = "",
+    created_at_utc: str = "",
+    data_rows: Dict[str, Any] | None = None,
+    metrics: Dict[str, Any] | None = None,
+    artifacts: Dict[str, Any] | None = None,
+    status: str = "success",
+    error: Any = None,
+    extra: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    payload: Dict[str, Any] = {
+        "stage": stage,
+        "pipeline_run_id": pipeline_run_id,
+        "run_id": run_id,
+        "experiment_name": experiment_name,
+        "created_at_utc": created_at_utc or datetime.now(timezone.utc).isoformat(),
+        "data_rows": data_rows or {},
+        "metrics": metrics or {},
+        "artifacts": artifacts or {},
+        "status": status,
+        "error": error,
+    }
+    if extra:
+        payload.update(extra)
+    return payload
+
+
+def write_stage_metadata(
+    *,
+    stage_file_name: str,
+    metadata: Dict[str, Any],
+    pipeline_run_id: str,
+    base_dir: str = "src/metadata",
+) -> Path:
+    """
+    Write stage metadata atomically to:
+    src/metadata/pipeline_<PIPELINE_RUN_ID>/<stage_file_name>
+    """
+    metadata_dir = get_pipeline_metadata_dir(pipeline_run_id=pipeline_run_id, base_dir=base_dir)
+    metadata_path = metadata_dir / stage_file_name
+    tmp_path = metadata_path.with_suffix(metadata_path.suffix + ".tmp")
+    with tmp_path.open("w", encoding="utf-8") as handle:
+        json.dump(metadata, handle, indent=2, sort_keys=False, default=_safe_json_value)
+        handle.write("\n")
+    tmp_path.replace(metadata_path)
+    return metadata_path

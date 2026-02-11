@@ -7,7 +7,13 @@ from pathlib import Path
 from typing import List
 
 from pyspark.sql import SparkSession
-from utils.spark_utils import collect_dataframe_metadata, collect_file_sizes, write_metadata_json
+from utils.spark_utils import (
+    build_stage_metadata,
+    collect_dataframe_metadata,
+    collect_file_sizes,
+    get_pipeline_run_id,
+    write_stage_metadata,
+)
 
 
 class NYCDataIngestion:
@@ -175,6 +181,9 @@ class NYCDataIngestion:
         Download and save data for all months in the specified year.
         """
         run_start = datetime.now(timezone.utc)
+        pipeline_run_id = get_pipeline_run_id()
+        status = "success"
+        error = None
         output_files: List[Path] = []
         input_urls: List[str] = []
         print(f"Starting data ingestion for year {self.year}")
@@ -194,28 +203,43 @@ class NYCDataIngestion:
                 failed += 1
         
         run_end = datetime.now(timezone.utc)
-        metadata = {
-            "stage": "ingestion",
+        metrics = {
             "year": self.year,
-            "run_id": run_start.isoformat(),
-            "started_at": run_start.isoformat(),
-            "finished_at": run_end.isoformat(),
+            "successful_months": successful,
+            "failed_months": failed,
             "duration_seconds": (run_end - run_start).total_seconds(),
             "inputs": {"urls": input_urls},
-            "outputs": {"root_dir": str(self.output_dir), **collect_file_sizes(output_files)},
-            "summary": {"successful_months": successful, "failed_months": failed},
         }
-
         if output_files:
             df = self.spark.read.parquet(*[str(path) for path in output_files])
-            metadata["data_profile"] = collect_dataframe_metadata(df)
-
-        write_metadata_json(metadata, self.output_dir)
+            metrics["data_profile"] = collect_dataframe_metadata(df)
+        metadata = build_stage_metadata(
+            stage="data_ingestion",
+            pipeline_run_id=pipeline_run_id,
+            run_id=run_start.isoformat(),
+            created_at_utc=run_end.isoformat(),
+            data_rows={
+                "ingested_files": len(output_files),
+            },
+            metrics=metrics,
+            artifacts={
+                "output_root_dir": str(self.output_dir),
+                **collect_file_sizes(output_files),
+            },
+            status=status,
+            error=error,
+        )
+        metadata_path = write_stage_metadata(
+            stage_file_name="data_ingestion.json",
+            metadata=metadata,
+            pipeline_run_id=pipeline_run_id,
+        )
 
         print(f"\nData ingestion completed!")
         print(f"Successful: {successful}/12 months")
         print(f"Failed: {failed}/12 months")
         print(f"Data saved to: {self.output_dir}")
+        print(f"Metadata saved to: {metadata_path}")
     
     def close(self) -> None:
         """

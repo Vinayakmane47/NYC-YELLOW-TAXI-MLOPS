@@ -227,6 +227,7 @@ postgres-db-volume/
 
 # ML pipeline generated data/artifacts
 ml_transformed/
+src/metadata/
 src/mlflow/experiments/
 src/mlflow/models/
 mlruns/

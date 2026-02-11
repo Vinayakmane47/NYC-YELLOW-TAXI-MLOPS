@@ -1,35 +1,30 @@
 {
-  "model_family": "lightgbm",
+  "model_family": "random_forest",
   "params": {
-    "n_estimators": 294,
-    "learning_rate": 0.0732944736720803,
-    "num_leaves": 137,
-    "max_depth": 8,
-    "min_child_samples": 54,
-    "subsample": 0.9785298004390908,
-    "colsample_bytree": 0.6056040712326145,
-    "reg_alpha": 1.7439492700899482e-05,
-    "reg_lambda": 3.3751415167441376e-05,
+    "n_estimators": 865,
+    "max_depth": 26,
+    "min_samples_split": 12,
+    "min_samples_leaf": 10,
+    "max_features": 0.3032350881433708,
     "n_jobs": -1,
-    "verbosity": -1,
     "random_state": 42
   },
   "metrics": {
     "validation": {
-      "rmse": 5.197128401070199,
-      "mae": 3.3689646169995258,
-      "r2": 0.8010640339458863
+      "rmse": 4.900432858751921,
+      "mae": 3.3450342803201862,
+      "r2": 0.7741184397050613
     },
     "test": {
-      "rmse": 7.4196557289686,
-      "mae": 4.666068842281883,
-      "r2": 0.7593316077679964
+      "rmse": 6.306966870132008,
+      "mae": 4.130218015403456,
+      "r2": 0.7495302304079003
     }
   },
   "data": {
-    "train_rows": 50000,
-    "val_rows": 15000,
-    "test_rows": 15000,
+    "train_rows": 100000,
+    "val_rows": 30000,
+    "test_rows": 30000,
     "target_col": "trip_duration_min",
     "trained_on_range": "2023-01 to 2025-12",
     "data_schema_hash": "c3de760a84ba36233ccbab4ad7ee0b13c6156ad9dce8465818f872317082fe92"
@@ -44,10 +39,10 @@
     }
   },
   "mlflow": {
-    "pipeline_run_id": "run_093711022026",
-    "experiment_name": "run_093711022026",
-    "screening_run_id": "1684e0e569684ebaa05829c72c53e76b",
-    "hpo_run_id": "0a0b010f71ff45428e3265a82bd2ff8a"
+    "pipeline_run_id": "run_112811022026",
+    "experiment_name": "run_112811022026",
+    "screening_run_id": "3e13d69224e5462ab1abdea13c029ce5",
+    "hpo_run_id": "c9adc38e6b044e69ab1067fc0474a317"
   },
-  "created_at_utc": "2026-02-11T09:39:21.157447+00:00"
+  "created_at_utc": "2026-02-11T11:34:04.847893+00:00"
 }
