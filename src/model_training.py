@@ -1,0 +1,401 @@
+"""
+Model Training Pipeline - Main Airflow DAG stage.
+
+Reads champion.json (output of offline screening/HPO) to get the
+winning model family + hyperparameters, then trains that exact model on
+full production data (~3M rows). Logs everything to MLflow experiment "pipeline".
+
+Usage::
+
+    python -m src.model_training
+"""
+
+import importlib
+import json
+import os
+import sys
+import time
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, Tuple
+
+import joblib
+import numpy as np
+import pandas as pd
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+
+# Ensure project root is importable.
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from src.config.config import ChampionConfig, PipelineConfig
+from src.mlflow.mlflow import MODEL_REGISTRY, _load_external_mlflow
+from src.utils.spark_utils import SparkUtils
+
+mlflow = _load_external_mlflow()
+importlib.import_module("mlflow.sklearn")
+
+
+# ---------------------------------------------------------------------------
+# Result dataclass
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class TrainingResult:
+    """Output of the model training pipeline."""
+
+    model_family: str
+    model_path: str
+    val_metrics: Dict[str, float]
+    train_rows: int
+    val_rows: int
+    run_id: str
+    experiment_name: str
+    timestamp_utc: str
+    params: Dict[str, Any] = field(default_factory=dict)
+    metadata_path: str = ""
+
+
+# ---------------------------------------------------------------------------
+# Training Pipeline
+# ---------------------------------------------------------------------------
+
+
+class ModelTrainingPipeline:
+    """Trains the champion model (from HPO) on full production data.
+
+    Reads champion.json for model family + params, loads full
+    training data via Spark, fits the model, and logs to MLflow
+    experiment "pipeline".
+    """
+
+    EXPERIMENT_NAME = "pipeline"
+    MAX_RECOMMENDED_PANDAS_ROWS = 2_000_000
+
+    def __init__(
+        self,
+        pipeline_config: PipelineConfig,
+        champion_config: ChampionConfig,
+    ) -> None:
+        self.config = pipeline_config
+        self.champion = champion_config
+        self.timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        self.pipeline_run_id = (
+            self.champion.mlflow.pipeline_run_id
+            if self.champion.mlflow and self.champion.mlflow.pipeline_run_id
+            else (
+                self.champion.mlflow.experiment_name
+                if self.champion.mlflow and self.champion.mlflow.experiment_name
+                else f"pipeline_{self.timestamp}"
+            )
+        )
+        self.spark = SparkUtils(app_name="nyc-taxi-pipeline-training").spark
+        self._setup_mlflow()
+
+    # -- MLflow setup --------------------------------------------------------
+
+    def _load_env_token(self) -> str:
+        """Load DagShub token from env var or .env file."""
+        key = self.config.tracking.token_env_key
+        token = os.getenv(key)
+        if token:
+            return token.strip()
+
+        env_path = Path(self.config.tracking.env_file_path)
+        if not env_path.exists():
+            raise ValueError(f"Missing token and {env_path} not found. Set {key} in env or .env.")
+
+        for line in env_path.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or "=" not in stripped:
+                continue
+            k, v = stripped.split("=", 1)
+            if k.strip() == key:
+                token = v.strip().strip('"').strip("'")
+                if token:
+                    return token
+                break
+
+        raise ValueError(f"{key} is missing/empty in {env_path}.")
+
+    def _setup_mlflow(self) -> None:
+        token = self._load_env_token()
+        os.environ["MLFLOW_TRACKING_USERNAME"] = self.config.tracking.username
+        os.environ["MLFLOW_TRACKING_PASSWORD"] = token
+        mlflow.set_tracking_uri(self.config.tracking.tracking_uri)
+
+    # -- Data loading --------------------------------------------------------
+
+    def _load_split(self, path: str, split_name: str, max_rows: int) -> pd.DataFrame:
+        """Read parquet with Spark, limit rows, convert to pandas."""
+        sdf = self.spark.read.parquet(path)
+        target = self.config.data.target_col
+
+        if target not in sdf.columns:
+            raise ValueError(f"Target column '{target}' missing in {split_name}: {path}")
+
+        feature_cols = [c for c in sdf.columns if c != target]
+        sdf = sdf.select(*feature_cols, target)
+
+        sample_frac = self.config.data.sample_fraction
+        if sample_frac is not None and 0 < sample_frac < 1:
+            sdf = sdf.sample(
+                withReplacement=False,
+                fraction=sample_frac,
+                seed=self.config.training.random_state,
+            )
+
+        if max_rows > 0:
+            sdf = sdf.limit(max_rows)
+
+        pdf = sdf.toPandas()
+        print(f"[training] {split_name}: {len(pdf):,} rows, {len(pdf.columns)} cols")
+        return pdf
+
+    def _load_data(self) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        """Load train and val splits."""
+        train_df = self._load_split(
+            self.config.data.train_path,
+            split_name="train",
+            max_rows=self.config.data.max_rows_train,
+        )
+        val_df = self._load_split(
+            self.config.data.val_path,
+            split_name="val",
+            max_rows=self.config.data.max_rows_val,
+        )
+        return train_df, val_df
+
+    def _validate_feature_set(self, x_train: pd.DataFrame, x_val: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        """
+        Validate and align features against champion contract when provided.
+        """
+        if not self.champion.feature_list:
+            return x_train, x_val
+
+        expected = list(self.champion.feature_list)
+        missing = [col for col in expected if col not in x_train.columns]
+        if missing:
+            raise ValueError(
+                f"Champion feature_list has missing columns in training data: {missing[:10]}"
+            )
+
+        x_train_aligned = x_train[expected]
+        x_val_aligned = x_val[expected]
+        return x_train_aligned, x_val_aligned
+
+    def _enforce_data_guardrails(self, train_rows: int) -> None:
+        if train_rows > self.MAX_RECOMMENDED_PANDAS_ROWS:
+            raise ValueError(
+                "Loaded training data is too large for pandas-based training "
+                f"({train_rows:,} rows). Reduce data.max_rows_train/sample_fraction or "
+                "switch to a distributed trainer."
+            )
+
+    def _prepare_xy(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series]:
+        target = self.config.data.target_col
+        return df.drop(columns=[target]), df[target]
+
+    # -- Metrics -------------------------------------------------------------
+
+    def _compute_metrics(self, y_true: pd.Series, y_pred: np.ndarray) -> Dict[str, float]:
+        return {
+            "rmse": float(np.sqrt(mean_squared_error(y_true, y_pred))),
+            "mae": float(mean_absolute_error(y_true, y_pred)),
+            "r2": float(r2_score(y_true, y_pred)),
+        }
+
+    # -- Model building ------------------------------------------------------
+
+    def _build_model(self) -> Any:
+        """Build the champion model using MODEL_REGISTRY + champion params."""
+        family = self.champion.model_family
+        if family not in MODEL_REGISTRY:
+            raise ValueError(
+                f"Unknown model family '{family}'. "
+                f"Registered: {list(MODEL_REGISTRY.keys())}"
+            )
+
+        model_cfg = {
+            "search_space": {},
+            "fixed_params": self.champion.params,
+            "screening_fixed_params": self.champion.params,
+        }
+        strategy = MODEL_REGISTRY[family](model_cfg, self.config.training.random_state)
+        return strategy.build_model(self.champion.params)
+
+    # -- Filesystem ----------------------------------------------------------
+
+    def _ensure_dirs(self) -> None:
+        Path(self.config.training.models_dir).mkdir(parents=True, exist_ok=True)
+        metadata_dir = (
+            Path(self.config.training.champion_config_path).parent
+            / "experiments"
+            / self.pipeline_run_id
+        )
+        metadata_dir.mkdir(parents=True, exist_ok=True)
+
+    def _metadata_path(self) -> Path:
+        return (
+            Path(self.config.training.champion_config_path).parent
+            / "experiments"
+            / self.pipeline_run_id
+            / "training_metadata.json"
+        )
+
+    # -- Main pipeline -------------------------------------------------------
+
+    def run(self) -> TrainingResult:
+        """Train champion model on full data, log to MLflow."""
+        self._ensure_dirs()
+        print(f"[training] champion model={self.champion.model_family}")
+        print(f"[training] params={json.dumps(self.champion.params, indent=2)}")
+
+        # 1. Load data
+        print("[training] loading data...")
+        train_df, val_df = self._load_data()
+        self._enforce_data_guardrails(len(train_df))
+        x_train, y_train = self._prepare_xy(train_df)
+        x_val, y_val = self._prepare_xy(val_df)
+        x_train, x_val = self._validate_feature_set(x_train, x_val)
+
+        # 2. Build model
+        model = self._build_model()
+
+        # 3. Train and log to MLflow
+        mlflow.set_experiment(self.EXPERIMENT_NAME)
+
+        with mlflow.start_run(run_name=f"training_{self.timestamp}") as run:
+            mlflow.set_tag("project", "NYC-YELLOW-TAXI-MLOPS")
+            mlflow.set_tag("repo", self.config.tracking.repo_name)
+            mlflow.set_tag("pipeline_stage", "model_training")
+            mlflow.set_tag("model_family", self.champion.model_family)
+            mlflow.set_tag("pipeline_run_id", self.pipeline_run_id)
+
+            # Log params
+            mlflow.log_params(self.champion.params)
+            mlflow.log_param("target_col", self.config.data.target_col)
+            mlflow.log_param("trained_on_range", self.config.data.trained_on_range)
+            mlflow.log_param("train_rows", len(train_df))
+            mlflow.log_param("val_rows", len(val_df))
+
+            # Fit
+            print(f"[training] fitting on {len(x_train):,} rows...")
+            start_ts = time.time()
+            model.fit(x_train, y_train)
+            elapsed = time.time() - start_ts
+            print(f"[training] fit completed in {elapsed:.2f}s")
+
+            mlflow.log_metric("training_time_sec", elapsed)
+
+            # Val metrics
+            val_pred = model.predict(x_val)
+            val_metrics = self._compute_metrics(y_val, val_pred)
+            print(
+                f"[training] val metrics: "
+                f"rmse={val_metrics['rmse']:.4f} "
+                f"mae={val_metrics['mae']:.4f} "
+                f"r2={val_metrics['r2']:.4f}"
+            )
+            mlflow.log_metrics({
+                "val_rmse": val_metrics["rmse"],
+                "val_mae": val_metrics["mae"],
+                "val_r2": val_metrics["r2"],
+            })
+
+            # Save model artifact
+            model_path = (
+                Path(self.config.training.models_dir)
+                / f"{self.champion.model_family}_{self.timestamp}.joblib"
+            )
+            joblib.dump(model, model_path)
+            print(f"[training] model saved to {model_path}")
+
+            # Log model to MLflow
+            mlflow.sklearn.log_model(model, artifact_path="trained_model")
+            mlflow.log_artifact(str(model_path))
+
+            # Update champion_config with new model path and metrics
+            self.champion.artifacts["model_path"] = str(model_path)
+            self.champion.training_info["pipeline_validation"] = val_metrics
+            self.champion.training_info["pipeline_training_run_id"] = run.info.run_id
+            self.champion.save(self.config.training.champion_config_path)
+
+            # Save training metadata
+            result = TrainingResult(
+                model_family=self.champion.model_family,
+                model_path=str(model_path),
+                val_metrics=val_metrics,
+                train_rows=len(train_df),
+                val_rows=len(val_df),
+                run_id=run.info.run_id,
+                experiment_name=self.EXPERIMENT_NAME,
+                timestamp_utc=self.timestamp,
+                params=self.champion.params,
+                metadata_path=str(self._metadata_path()),
+            )
+
+            meta_path = self._metadata_path()
+            metadata = {
+                "stage": "model_training",
+                "pipeline_run_id": self.pipeline_run_id,
+                "run_id": result.run_id,
+                "experiment_name": result.experiment_name,
+                "created_at_utc": self.timestamp,
+                "data_rows": {
+                    "train_rows": result.train_rows,
+                    "val_rows": result.val_rows,
+                },
+                "metrics": {
+                    "validation": result.val_metrics,
+                    "training_time_sec": elapsed,
+                },
+                "artifacts": {
+                    "model_path": result.model_path,
+                    "metadata_path": str(meta_path),
+                },
+                "model_family": result.model_family,
+            }
+
+            with meta_path.open("w", encoding="utf-8") as f:
+                json.dump(metadata, f, indent=2, sort_keys=False)
+                f.write("\n")
+            mlflow.log_artifact(str(meta_path))
+
+            print(f"[training] metadata saved to {meta_path}")
+            print(f"[training] MLflow run_id={run.info.run_id}")
+
+        return result
+
+    def close(self) -> None:
+        """Stop Spark session."""
+        if self.spark:
+            self.spark.stop()
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+
+def main() -> None:
+    """Entry point for Airflow PythonOperator or CLI."""
+    config = PipelineConfig.from_yaml()
+    champion = ChampionConfig.load(config.training.champion_config_path)
+
+    pipeline = ModelTrainingPipeline(config, champion)
+    try:
+        result = pipeline.run()
+        print("\n" + "=" * 80)
+        print("TRAINING RESULT")
+        print("=" * 80)
+        print(json.dumps(asdict(result), indent=2))
+    finally:
+        pipeline.close()
+
+
+if __name__ == "__main__":
+    main()

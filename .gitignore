@@ -224,3 +224,9 @@ airflow/unittests.cfg
 
 # Docker & PostgreSQL
 postgres-db-volume/
+
+# ML pipeline generated data/artifacts
+ml_transformed/
+src/mlflow/experiments/
+src/mlflow/models/
+mlruns/

@@ -1,0 +1,144 @@
+# ---------------------------------------------------------------------------
+# MLflow / DagShub connection
+# ---------------------------------------------------------------------------
+tracking:
+  tracking_uri: "https://dagshub.com/Vinayakmane47/NYC-YELLOW-TAXI-MLOPS.mlflow/"
+  username: "Vinayakmane47"
+  repo_name: "NYC-YELLOW-TAXI-MLOPS"
+  token_env_key: "DAGSHUB_TOKEN"
+  env_file_path: ".env"
+
+# ---------------------------------------------------------------------------
+# Data loading
+# - Keep low for quick testing
+# - Increase for production training
+# ---------------------------------------------------------------------------
+data:
+  train_path: "ml_transformed/train.parquet"
+  val_path: "ml_transformed/val.parquet"
+  test_path: "ml_transformed/test.parquet"
+  target_col: "trip_duration_min"
+  trained_on_range: "2023-01 to 2025-12"
+  max_rows_train: 100000
+  max_rows_val: 30000
+  max_rows_test: 30000
+  # Optional Spark-side sampling before row cap. Use null to disable.
+  sample_fraction: null
+
+# ---------------------------------------------------------------------------
+# Stage 1 (screening)
+# - Fast filter stage before expensive HPO
+# ---------------------------------------------------------------------------
+screening:
+  # Number of best HPO-eligible models to send to stage 2.
+  top_n_for_hpo: 2
+  # Separate row caps for screening speed.
+  row_cap_train: 20000
+  row_cap_val: 10000
+
+# ---------------------------------------------------------------------------
+# Promotion policy used in model_evaluation.py
+# ---------------------------------------------------------------------------
+evaluation:
+  # New model must improve RMSE by at least this amount.
+  min_rmse_improvement: 0.0
+  # New model can regress MAE by at most this value.
+  max_mae_regression: 0.0
+  # New model can regress R2 by at most this value.
+  max_r2_regression: 0.0
+
+# ---------------------------------------------------------------------------
+# Stage 2 (HPO + final model artifact)
+# ---------------------------------------------------------------------------
+training:
+  n_trials_per_model: 3
+  random_state: 42
+  # Final selected model summary is written here.
+  champion_config_path: "src/mlflow/champion.json"
+  metric_thresholds:
+    min_r2: 0.0
+    max_rmse: 999999.0
+    max_mae: 999999.0
+
+# ---------------------------------------------------------------------------
+# HPO-eligible models
+# - Set enabled: false to skip model
+# - Add/remove model blocks as needed
+# ---------------------------------------------------------------------------
+models_to_train:
+  - name: lightgbm
+    enabled: true
+    # Used in stage 1 screening
+    screening_fixed_params:
+      n_estimators: 200
+      learning_rate: 0.1
+      num_leaves: 31
+      max_depth: -1
+      n_jobs: -1
+      verbosity: -1
+    # Used in stage 2 HPO
+    search_space:
+      n_estimators: { type: int, low: 200, high: 1200 }
+      learning_rate: { type: float, low: 0.01, high: 0.2, log: true }
+      num_leaves: { type: int, low: 15, high: 255 }
+      max_depth: { type: int, low: 3, high: 14 }
+      min_child_samples: { type: int, low: 10, high: 120 }
+      subsample: { type: float, low: 0.6, high: 1.0 }
+      colsample_bytree: { type: float, low: 0.6, high: 1.0 }
+      reg_alpha: { type: float, low: 0.000001, high: 10.0, log: true }
+      reg_lambda: { type: float, low: 0.000001, high: 10.0, log: true }
+    fixed_params:
+      n_jobs: -1
+      verbosity: -1
+
+  - name: random_forest
+    enabled: true
+    screening_fixed_params:
+      n_estimators: 120
+      max_depth: 12
+      min_samples_split: 4
+      min_samples_leaf: 2
+      max_features: 0.7
+      n_jobs: -1
+    search_space:
+      n_estimators: { type: int, low: 200, high: 1000 }
+      max_depth: { type: int, low: 4, high: 30 }
+      min_samples_split: { type: int, low: 2, high: 30 }
+      min_samples_leaf: { type: int, low: 1, high: 15 }
+      max_features: { type: float, low: 0.3, high: 1.0 }
+    fixed_params:
+      n_jobs: -1
+
+# ---------------------------------------------------------------------------
+# Optional screening-only models (not tuned with Optuna)
+# ---------------------------------------------------------------------------
+screening_models:
+  # Include HPO models here too if you want them to be screened.
+  - name: lightgbm
+    enabled: true
+    fixed_params:
+      n_estimators: 200
+      learning_rate: 0.1
+      num_leaves: 31
+      max_depth: -1
+      n_jobs: -1
+      verbosity: -1
+
+  - name: random_forest
+    enabled: true
+    fixed_params:
+      n_estimators: 120
+      max_depth: 12
+      min_samples_split: 4
+      min_samples_leaf: 2
+      max_features: 0.7
+      n_jobs: -1
+
+  - name: ridge
+    enabled: true
+    fixed_params: {}
+
+  - name: decision_tree
+    enabled: true
+    fixed_params:
+      max_depth: 10
