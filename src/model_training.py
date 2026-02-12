@@ -12,11 +12,9 @@ Usage::
 
 import importlib
 import json
-import os
 import sys
 import time
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Tuple
 
@@ -32,16 +30,14 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from src.config.config import ChampionConfig, PipelineConfig
 from src.models.model_factory import build_model
+from src.utils.base_pipeline import BasePipeline, mlflow
 from src.utils.spark_utils import (
     SparkUtils,
     build_stage_metadata,
-    get_pipeline_run_id,
     get_pipeline_metadata_dir,
     write_stage_metadata,
 )
-from src.utils.mlflow_client import load_external_mlflow
 
-mlflow = load_external_mlflow()
 importlib.import_module("mlflow.sklearn")
 
 
@@ -71,7 +67,7 @@ class TrainingResult:
 # ---------------------------------------------------------------------------
 
 
-class ModelTrainingPipeline:
+class ModelTrainingPipeline(BasePipeline):
     """Trains the champion model (from HPO) on full production data.
 
     Reads champion.json for model family + params, loads full
@@ -79,71 +75,22 @@ class ModelTrainingPipeline:
     experiment "pipeline".
     """
 
-    EXPERIMENT_NAME = "pipeline"
     MAX_RECOMMENDED_PANDAS_ROWS = 2_000_000
 
     def __init__(
         self,
-        settings: PipelineConfig,
+        pipeline_config: PipelineConfig,
         champion_config: ChampionConfig,
-        champion_path: str,
     ) -> None:
-        self.settings = settings
-        self.champion = champion_config
-        self.champion_path = champion_path
-        self.timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        self.pipeline_run_id = get_pipeline_run_id(strict=False)
-        if not self.pipeline_run_id:
-            self.pipeline_run_id = (
-                self.champion.mlflow.pipeline_run_id
-                if self.champion.mlflow and self.champion.mlflow.pipeline_run_id
-                else (
-                    self.champion.mlflow.experiment_name
-                    if self.champion.mlflow and self.champion.mlflow.experiment_name
-                    else self.timestamp
-                )
-            )
+        super().__init__(pipeline_config, champion_config)
         self.spark = SparkUtils(app_name="nyc-taxi-pipeline-training").spark
-        self._setup_mlflow()
-
-    # -- MLflow setup --------------------------------------------------------
-
-    def _load_env_token(self) -> str:
-        """Load DagShub token from env var or .env file."""
-        key = self.settings.tracking.token_env_key
-        token = os.getenv(key)
-        if token:
-            return token.strip()
-
-        env_path = Path(self.settings.tracking.env_file_path)
-        if not env_path.exists():
-            raise ValueError(f"Missing token and {env_path} not found. Set {key} in env or .env.")
-
-        for line in env_path.read_text(encoding="utf-8").splitlines():
-            stripped = line.strip()
-            if not stripped or stripped.startswith("#") or "=" not in stripped:
-                continue
-            k, v = stripped.split("=", 1)
-            if k.strip() == key:
-                token = v.strip().strip('"').strip("'")
-                if token:
-                    return token
-                break
-
-        raise ValueError(f"{key} is missing/empty in {env_path}.")
-
-    def _setup_mlflow(self) -> None:
-        token = self._load_env_token()
-        os.environ["MLFLOW_TRACKING_USERNAME"] = self.settings.tracking.username
-        os.environ["MLFLOW_TRACKING_PASSWORD"] = token
-        mlflow.set_tracking_uri(self.settings.tracking.tracking_uri)
 
     # -- Data loading --------------------------------------------------------
 
     def _load_split(self, path: str, split_name: str, max_rows: int) -> pd.DataFrame:
         """Read parquet with Spark, limit rows, convert to pandas."""
         sdf = self.spark.read.parquet(path)
-        target = self.settings.data.target_col
+        target = self.config.data.target_col
 
         if target not in sdf.columns:
             raise ValueError(f"Target column '{target}' missing in {split_name}: {path}")
@@ -151,12 +98,12 @@ class ModelTrainingPipeline:
         feature_cols = [c for c in sdf.columns if c != target]
         sdf = sdf.select(*feature_cols, target)
 
-        sample_frac = self.settings.data.sample_fraction
+        sample_frac = self.config.data.sample_fraction
         if sample_frac is not None and 0 < sample_frac < 1:
             sdf = sdf.sample(
                 withReplacement=False,
                 fraction=sample_frac,
-                seed=self.settings.training.random_state,
+                seed=self.config.training.random_state,
             )
 
         if max_rows > 0:
@@ -169,21 +116,19 @@ class ModelTrainingPipeline:
     def _load_data(self) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """Load train and val splits."""
         train_df = self._load_split(
-            self.settings.data.train_path,
+            self.config.data.train_path,
             split_name="train",
-            max_rows=self.settings.data.max_rows_train,
+            max_rows=self.config.data.max_rows_train,
         )
         val_df = self._load_split(
-            self.settings.data.val_path,
+            self.config.data.val_path,
             split_name="val",
-            max_rows=self.settings.data.max_rows_val,
+            max_rows=self.config.data.max_rows_val,
         )
         return train_df, val_df
 
     def _validate_feature_set(self, x_train: pd.DataFrame, x_val: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
-        """
-        Validate and align features against champion contract when provided.
-        """
+        """Validate and align features against champion contract when provided."""
         if not self.champion.feature_list:
             return x_train, x_val
 
@@ -207,7 +152,7 @@ class ModelTrainingPipeline:
             )
 
     def _prepare_xy(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series]:
-        target = self.settings.data.target_col
+        target = self.config.data.target_col
         return df.drop(columns=[target]), df[target]
 
     # -- Metrics -------------------------------------------------------------
@@ -228,7 +173,7 @@ class ModelTrainingPipeline:
     # -- Filesystem ----------------------------------------------------------
 
     def _ensure_dirs(self) -> None:
-        Path(self.settings.training.models_dir).mkdir(parents=True, exist_ok=True)
+        Path(self.config.training.models_dir).mkdir(parents=True, exist_ok=True)
         get_pipeline_metadata_dir(self.pipeline_run_id)
 
     def _metadata_path(self) -> Path:
@@ -254,19 +199,23 @@ class ModelTrainingPipeline:
         model = self._build_model()
 
         # 3. Train and log to MLflow
-        mlflow.set_experiment(self.EXPERIMENT_NAME)
+        parent_run_id = self._get_or_create_parent_run()
+        mlflow.set_experiment(self.experiment_name)
 
-        with mlflow.start_run(run_name=f"training_{self.timestamp}") as run:
+        with mlflow.start_run(
+            run_name=f"training_{self.timestamp}",
+            tags={"mlflow.parentRunId": parent_run_id},
+        ) as run:
             mlflow.set_tag("project", "NYC-YELLOW-TAXI-MLOPS")
-            mlflow.set_tag("repo", self.settings.tracking.repo_name)
+            mlflow.set_tag("repo", self.config.tracking.repo_name)
             mlflow.set_tag("pipeline_stage", "model_training")
             mlflow.set_tag("model_family", self.champion.model_family)
             mlflow.set_tag("pipeline_run_id", self.pipeline_run_id)
 
             # Log params
             mlflow.log_params(self.champion.params)
-            mlflow.log_param("target_col", self.settings.data.target_col)
-            mlflow.log_param("trained_on_range", self.settings.data.trained_on_range)
+            mlflow.log_param("target_col", self.config.data.target_col)
+            mlflow.log_param("trained_on_range", self.config.data.trained_on_range)
             mlflow.log_param("train_rows", len(train_df))
             mlflow.log_param("val_rows", len(val_df))
 
@@ -296,21 +245,15 @@ class ModelTrainingPipeline:
 
             # Save model artifact
             model_path = (
-                Path(self.settings.training.models_dir)
+                Path(self.config.training.models_dir)
                 / f"{self.champion.model_family}_{self.timestamp}.joblib"
             )
             joblib.dump(model, model_path)
             print(f"[training] model saved to {model_path}")
 
             # Log model to MLflow
-            mlflow.sklearn.log_model(model, artifact_path="trained_model")
+            mlflow.sklearn.log_model(model, name="trained_model")
             mlflow.log_artifact(str(model_path))
-
-            # Update champion_config with new model path and metrics
-            self.champion.artifacts["model_path"] = str(model_path)
-            self.champion.training_info["pipeline_validation"] = val_metrics
-            self.champion.training_info["pipeline_training_run_id"] = run.info.run_id
-            self.champion.save(self.champion_path)
 
             # Save training metadata
             meta_path = self._metadata_path()
@@ -321,7 +264,7 @@ class ModelTrainingPipeline:
                 train_rows=len(train_df),
                 val_rows=len(val_df),
                 run_id=run.info.run_id,
-                experiment_name=self.EXPERIMENT_NAME,
+                experiment_name=self.experiment_name,
                 timestamp_utc=self.timestamp,
                 params=self.champion.params,
                 metadata_path=str(meta_path),
@@ -331,7 +274,6 @@ class ModelTrainingPipeline:
                 stage="model_training",
                 pipeline_run_id=self.pipeline_run_id,
                 run_id=result.run_id,
-                experiment_name=result.experiment_name,
                 created_at_utc=self.timestamp,
                 data_rows={
                     "train_rows": result.train_rows,
@@ -343,11 +285,9 @@ class ModelTrainingPipeline:
                 },
                 artifacts={
                     "model_path": result.model_path,
-                    "metadata_path": str(meta_path),
                 },
                 status="success",
                 error=None,
-                extra={"model_family": result.model_family},
             )
             meta_path = write_stage_metadata(
                 stage_file_name="model_training.json",
@@ -374,11 +314,11 @@ class ModelTrainingPipeline:
 
 def main() -> None:
     """Entry point for Airflow PythonOperator or CLI."""
-    settings = PipelineConfig.from_yaml("src/config/settings.yaml")
-    champion_path = settings.training.champion_config_path
+    config = PipelineConfig.from_yaml("src/config/settings.yaml")
+    champion_path = config.training.champion_config_path
     champion = ChampionConfig.load(champion_path)
 
-    pipeline = ModelTrainingPipeline(settings, champion, champion_path)
+    pipeline = ModelTrainingPipeline(config, champion)
     try:
         result = pipeline.run()
         print("\n" + "=" * 80)

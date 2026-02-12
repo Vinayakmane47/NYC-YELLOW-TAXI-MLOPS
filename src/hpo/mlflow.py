@@ -1,5 +1,4 @@
 import hashlib
-import importlib
 import json
 import os
 import sys
@@ -27,47 +26,20 @@ from sklearn.linear_model import ElasticNet, Lasso, Ridge
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.tree import DecisionTreeRegressor
 
-# Ensure project root is importable when run as `python src/mlflow/mlflow.py`.
+# Ensure project root is importable when run as `python src/hpo/mlflow.py`.
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.mlflow.config_schema import MlflowPipelineConfig
+from src.hpo.config_schema import MlflowPipelineConfig
 from src.utils.spark_utils import SparkUtils
 
 
-def _load_external_mlflow():
-    """
-    Load pip-installed mlflow package and avoid local shadowing from src/mlflow.
-    """
-    current_dir = str(Path(__file__).resolve().parent)
-    parent_src_dir = str(Path(__file__).resolve().parents[1])
-    removed_paths: List[str] = []
-
-    for candidate in (current_dir, parent_src_dir):
-        if candidate in sys.path:
-            sys.path.remove(candidate)
-            removed_paths.append(candidate)
-
-    local_mod = sys.modules.get("mlflow")
-    if local_mod is not None:
-        mod_file = getattr(local_mod, "__file__", "")
-        if mod_file and str(Path(mod_file).resolve()).startswith(current_dir):
-            del sys.modules["mlflow"]
-
-    external_mlflow = importlib.import_module("mlflow")
-
-    for candidate in reversed(removed_paths):
-        sys.path.insert(0, candidate)
-
-    return external_mlflow
+import mlflow
+import mlflow.sklearn
 
 
-mlflow = _load_external_mlflow()
-importlib.import_module("mlflow.sklearn")
-
-
-DEFAULT_CONFIG_PATH = "src/mlflow/config_mlflow.yaml"
+DEFAULT_CONFIG_PATH = "src/hpo/config_mlflow.yaml"
 
 
 # ---------------------------------------------------------------------------

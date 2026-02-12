@@ -54,7 +54,7 @@ training:
   n_trials_per_model: 3
   random_state: 42
   # Final selected model summary is written here.
-  champion_config_path: "src/mlflow/champion.json"
+  champion_config_path: "src/hpo/champion.json"
   metric_thresholds:
     min_r2: 0.0
     max_rmse: 999999.0

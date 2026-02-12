@@ -16,9 +16,9 @@
       "r2": 0.7741184397050613
     },
     "test": {
-      "rmse": 6.306966870132008,
-      "mae": 4.130218015403456,
-      "r2": 0.7495302304079003
+      "rmse": 5.978339274184687,
+      "mae": 3.338277559888037,
+      "r2": 0.7683049073171299
     }
   },
   "data": {
@@ -31,18 +31,40 @@
   },
   "quality_gate": {
     "passed": true,
-    "violations": [],
-    "thresholds": {
-      "min_r2": 0.0,
-      "max_rmse": 999999.0,
-      "max_mae": 999999.0
-    }
+    "violations": []
   },
   "mlflow": {
-    "pipeline_run_id": "run_112811022026",
     "experiment_name": "run_112811022026",
     "screening_run_id": "3e13d69224e5462ab1abdea13c029ce5",
-    "hpo_run_id": "c9adc38e6b044e69ab1067fc0474a317"
+    "hpo_run_id": "c9adc38e6b044e69ab1067fc0474a317",
+    "pipeline_run_id": "run_112811022026"
   },
-  "created_at_utc": "2026-02-11T11:34:04.847893+00:00"
+  "created_at_utc": "2026-02-11T11:34:04.847893+00:00",
+  "feature_list": [],
+  "data_schema_hash": "",
+  "trained_on_range": "",
+  "metric_thresholds": {
+    "min_r2": 0.0,
+    "max_rmse": 999999.0,
+    "max_mae": 999999.0
+  },
+  "dataset_info": {},
+  "artifacts": {
+    "model_path": "artifacts/models/random_forest_20260211T121306Z.joblib"
+  },
+  "training_info": {
+    "pipeline_validation": {
+      "rmse": 9.651012682274223,
+      "mae": 6.034552582275115,
+      "r2": 0.5200468550875426
+    },
+    "pipeline_training_run_id": "4562aca2bbd54704a2989ee152e965c8",
+    "should_register": true,
+    "evaluation_run_id": "ac68c30eac7445e4b0ff0fee569a233f",
+    "decision_reason": "no_production_model"
+  },
+  "leaderboard": [],
+  "screening_results": [],
+  "hpo_candidates": [],
+  "mlflow_info": null
 }

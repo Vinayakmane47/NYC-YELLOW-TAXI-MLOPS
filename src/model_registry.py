@@ -12,10 +12,8 @@ Usage::
 
 import importlib
 import json
-import os
 import sys
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -25,10 +23,9 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.config.config import ChampionConfig, PipelineConfig
-from src.utils.mlflow_client import load_external_mlflow
-from src.utils.spark_utils import build_stage_metadata, get_pipeline_run_id, write_stage_metadata
+from src.utils.base_pipeline import BasePipeline, mlflow
+from src.utils.spark_utils import build_stage_metadata, write_stage_metadata
 
-mlflow = load_external_mlflow()
 mlflow_client = importlib.import_module("mlflow.tracking").MlflowClient
 
 
@@ -56,7 +53,7 @@ class RegistryResult:
 # ---------------------------------------------------------------------------
 
 
-class ModelRegistryPipeline:
+class ModelRegistryPipeline(BasePipeline):
     """Registers the best model to MLflow Model Registry.
 
     If evaluation says the new model should be promoted:
@@ -66,61 +63,13 @@ class ModelRegistryPipeline:
       4. Archive old Production version
     """
 
-    EXPERIMENT_NAME = "pipeline"
-    REGISTERED_MODEL_NAME = "nyc-taxi-trip-duration"
-
     def __init__(
         self,
         pipeline_config: PipelineConfig,
         champion_config: ChampionConfig,
     ) -> None:
-        self.config = pipeline_config
-        self.champion = champion_config
-        self.timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        self.pipeline_run_id = get_pipeline_run_id(strict=False)
-        if not self.pipeline_run_id:
-            self.pipeline_run_id = (
-                self.champion.mlflow.pipeline_run_id
-                if self.champion.mlflow and self.champion.mlflow.pipeline_run_id
-                else (
-                    self.champion.mlflow.experiment_name
-                    if self.champion.mlflow and self.champion.mlflow.experiment_name
-                    else self.timestamp
-                )
-            )
-        self._setup_mlflow()
+        super().__init__(pipeline_config, champion_config)
         self.client = mlflow_client(tracking_uri=self.config.tracking.tracking_uri)
-
-    # -- MLflow setup --------------------------------------------------------
-
-    def _load_env_token(self) -> str:
-        key = self.config.tracking.token_env_key
-        token = os.getenv(key)
-        if token:
-            return token.strip()
-
-        env_path = Path(self.config.tracking.env_file_path)
-        if not env_path.exists():
-            raise ValueError(f"Missing token and {env_path} not found. Set {key} in env or .env.")
-
-        for line in env_path.read_text(encoding="utf-8").splitlines():
-            stripped = line.strip()
-            if not stripped or stripped.startswith("#") or "=" not in stripped:
-                continue
-            k, v = stripped.split("=", 1)
-            if k.strip() == key:
-                token = v.strip().strip('"').strip("'")
-                if token:
-                    return token
-                break
-
-        raise ValueError(f"{key} is missing/empty in {env_path}.")
-
-    def _setup_mlflow(self) -> None:
-        token = self._load_env_token()
-        os.environ["MLFLOW_TRACKING_USERNAME"] = self.config.tracking.username
-        os.environ["MLFLOW_TRACKING_PASSWORD"] = token
-        mlflow.set_tracking_uri(self.config.tracking.tracking_uri)
 
     # -- Evaluation result loading -------------------------------------------
 
@@ -206,7 +155,7 @@ class ModelRegistryPipeline:
         return Path("src/metadata") / f"pipeline_{self.pipeline_run_id}" / "model_registry.json"
 
     def _validate_evaluation_preflight(self, eval_meta: Dict[str, Any]) -> None:
-        required = ["stage", "pipeline_run_id", "should_register"]
+        required = ["stage", "pipeline_run_id", "metrics"]
         missing = [k for k in required if k not in eval_meta]
         if missing:
             raise ValueError(f"Evaluation metadata missing required fields: {missing}")
@@ -227,13 +176,14 @@ class ModelRegistryPipeline:
         # 1. Load evaluation decision
         eval_meta = self._load_evaluation_metadata()
         self._validate_evaluation_preflight(eval_meta)
-        should_register = eval_meta.get("should_register", False)
-        quality_gate_passed = bool(eval_meta.get("quality_gate_passed", False))
+        eval_metrics = eval_meta.get("metrics", {})
+        should_register = bool(eval_metrics.get("should_register", False))
+        quality_gate_passed = bool(eval_metrics.get("quality_gate_passed", False))
 
         if not should_register:
             reason = (
                 "Evaluation decided not to register. "
-                f"New model better: {eval_meta.get('is_new_better')}. "
+                f"New model better: {eval_metrics.get('is_new_better')}. "
                 f"Quality gate passed: {quality_gate_passed}."
             )
             print(f"[registry] skipping registration: {reason}")
@@ -260,9 +210,13 @@ class ModelRegistryPipeline:
         existing_version = self._find_existing_version_for_run(training_run_id)
 
         # 4. Register model
-        mlflow.set_experiment(self.EXPERIMENT_NAME)
+        parent_run_id = self._get_or_create_parent_run()
+        mlflow.set_experiment(self.experiment_name)
 
-        with mlflow.start_run(run_name=f"registry_{self.timestamp}") as run:
+        with mlflow.start_run(
+            run_name=f"registry_{self.timestamp}",
+            tags={"mlflow.parentRunId": parent_run_id},
+        ) as run:
             mlflow.set_tag("project", "NYC-YELLOW-TAXI-MLOPS")
             mlflow.set_tag("repo", self.config.tracking.repo_name)
             mlflow.set_tag("pipeline_stage", "model_registry")
@@ -277,9 +231,17 @@ class ModelRegistryPipeline:
                     f"(stage={existing_version['current_stage']})"
                 )
             else:
-                model_version = mlflow.register_model(
-                    model_uri=model_uri,
+                # Use create_model_version (lower-level API) for compatibility
+                # with DagShub and older MLflow servers that don't support
+                # the logged_model API used by mlflow.register_model in 3.x.
+                try:
+                    self.client.create_registered_model(self.REGISTERED_MODEL_NAME)
+                except Exception:
+                    pass  # already exists
+                model_version = self.client.create_model_version(
                     name=self.REGISTERED_MODEL_NAME,
+                    source=model_uri,
+                    run_id=training_run_id,
                 )
                 version_num = int(model_version.version)
                 print(f"[registry] registered as version {version_num}")
@@ -347,14 +309,12 @@ class ModelRegistryPipeline:
             stage="model_registry",
             pipeline_run_id=self.pipeline_run_id,
             run_id=result.run_id,
-            experiment_name=self.EXPERIMENT_NAME,
             created_at_utc=result.timestamp_utc,
             data_rows={},
-            metrics={},
-            artifacts={"metadata_path": str(meta_path)},
+            metrics=metadata,
+            artifacts={},
             status="success" if result.registered else "skipped",
             error=None,
-            extra=metadata,
         )
         meta_path = write_stage_metadata(
             stage_file_name="model_registry.json",
@@ -362,9 +322,6 @@ class ModelRegistryPipeline:
             pipeline_run_id=self.pipeline_run_id,
         )
         print(f"[registry] metadata saved to {meta_path}")
-
-    def close(self) -> None:
-        pass
 
 
 # ---------------------------------------------------------------------------

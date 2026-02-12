@@ -1,12 +1,11 @@
 """
-NYC Yellow Taxi MLOps Pipeline DAG
+DAG A: NYC Data Refresh Pipeline
 
-Orchestrates the complete pipeline:
-  Data stages:  Ingestion -> Validation -> Preprocessing -> Transformation -> ML Transformation
-  ML stages:    Model Training -> Model Evaluation -> Model Registry
+Runs monthly to keep the curated dataset fresh:
+  Ingestion -> Validation -> Preprocessing -> Transformation -> ML Transformation -> Retrain Decider
 
-Each DAG run shares a single PIPELINE_RUN_ID so all stage metadata is
-written to the same folder: src/metadata/pipeline_<RUN_ID>/
+The retrain_decider task runs Evidently data drift detection. If significant
+drift is found, it triggers DAG B (nyc_model_retrain_dag) via TriggerDagRunOperator.
 """
 
 import os
@@ -14,26 +13,24 @@ import sys
 from datetime import datetime, timedelta
 
 from airflow import DAG
-from airflow.operators.python import PythonOperator
+from airflow.operators.python import PythonOperator, ShortCircuitOperator
+from airflow.operators.trigger_dagrun import TriggerDagRunOperator
 
 # Add project root to Python path for imports
 sys.path.insert(0, '/opt/airflow/src')
 sys.path.insert(0, '/opt/airflow')
 
-# Import pipeline entry points
 from src.data_ingestion import main as data_ingestion_main
 from src.data_validation import main as data_validation_main
 from src.data_preprocessing import main as data_preprocessing_main
 from src.data_transformation import main as data_transformation_main
 from src.ml_transformed import main as ml_transformation_main
-from src.model_training import main as model_training_main
-from src.model_evaluation import main as model_evaluation_main
-from src.model_registry import main as model_registry_main
+from src.drift_detection import main as drift_detection_main
 
 
 def _set_pipeline_run_id(**context):
     """Inject a shared PIPELINE_RUN_ID from the Airflow execution date."""
-    run_id = context["ds_nodash"]  # e.g. "20260212"
+    run_id = context["ds_nodash"]
     os.environ["PIPELINE_RUN_ID"] = run_id
     print(f"PIPELINE_RUN_ID set to {run_id}")
 
@@ -42,7 +39,6 @@ def run_data_ingestion(**context):
     """Download raw NYC taxi data (Bronze layer)."""
     _set_pipeline_run_id(**context)
     data_ingestion_main()
-
 
 
 def run_data_validation(**context):
@@ -69,22 +65,19 @@ def run_ml_transformation(**context):
     ml_transformation_main()
 
 
-def run_model_training(**context):
-    """Train champion model from champion.json."""
+def run_retrain_decider(**context):
+    """Run drift detection and push retrain decision to XCom."""
     _set_pipeline_run_id(**context)
-    model_training_main()
+    result = drift_detection_main()
+    should_retrain = not result.drift_gate_passed
+    context['ti'].xcom_push(key='should_retrain', value=should_retrain)
+    context['ti'].xcom_push(key='pipeline_run_id', value=os.environ['PIPELINE_RUN_ID'])
+    print(f"[retrain_decider] drift_gate_passed={result.drift_gate_passed}, should_retrain={should_retrain}")
 
 
-def run_model_evaluation(**context):
-    """Evaluate new model against registered Production model."""
-    _set_pipeline_run_id(**context)
-    model_evaluation_main()
-
-
-def run_model_registry(**context):
-    """Register and promote model in MLflow Model Registry."""
-    _set_pipeline_run_id(**context)
-    model_registry_main()
+def check_should_retrain(**context):
+    """ShortCircuit: only proceed if retrain_decider says yes."""
+    return context['ti'].xcom_pull(key='should_retrain', task_ids='retrain_decider')
 
 
 # ---------------------------------------------------------------------------
@@ -103,14 +96,14 @@ default_args = {
 }
 
 dag = DAG(
-    'nyc_taxi_mlops_pipeline',
+    'nyc_data_refresh_dag',
     default_args=default_args,
-    description='Complete MLOps pipeline: data ETL + model training/evaluation/registry',
+    description='Monthly data refresh: ETL + drift detection + conditional retrain trigger',
     schedule_interval='@monthly',
     start_date=datetime(2025, 1, 1),
     catchup=False,
     max_active_runs=1,
-    tags=['nyc-taxi', 'etl', 'ml', 'production', 'mlops'],
+    tags=['nyc-taxi', 'etl', 'data-refresh', 'drift', 'production'],
 )
 
 # -- Data stages -----------------------------------------------------------
@@ -145,29 +138,30 @@ ml_transformation_task = PythonOperator(
     dag=dag,
 )
 
-# -- ML stages -------------------------------------------------------------
+# -- Drift detection + conditional trigger ---------------------------------
 
-training_task = PythonOperator(
-    task_id='model_training',
-    python_callable=run_model_training,
+retrain_decider_task = PythonOperator(
+    task_id='retrain_decider',
+    python_callable=run_retrain_decider,
     dag=dag,
 )
 
-evaluation_task = PythonOperator(
-    task_id='model_evaluation',
-    python_callable=run_model_evaluation,
+should_retrain_task = ShortCircuitOperator(
+    task_id='check_should_retrain',
+    python_callable=check_should_retrain,
     dag=dag,
 )
 
-registry_task = PythonOperator(
-    task_id='model_registry',
-    python_callable=run_model_registry,
+trigger_retrain_task = TriggerDagRunOperator(
+    task_id='trigger_retrain',
+    trigger_dag_id='nyc_model_retrain_dag',
+    conf={
+        'pipeline_run_id': '{{ ti.xcom_pull(key="pipeline_run_id", task_ids="retrain_decider") }}',
+    },
     dag=dag,
 )
 
 # -- Task dependencies -----------------------------------------------------
-# Data: ingestion -> validation -> preprocessing -> transformation -> ml_transformation
-# ML:   ml_transformation -> training -> evaluation -> registry
 
 (
     ingestion_task
@@ -175,7 +169,7 @@ registry_task = PythonOperator(
     >> preprocessing_task
     >> transformation_task
     >> ml_transformation_task
-    >> training_task
-    >> evaluation_task
-    >> registry_task
+    >> retrain_decider_task
+    >> should_retrain_task
+    >> trigger_retrain_task
 )

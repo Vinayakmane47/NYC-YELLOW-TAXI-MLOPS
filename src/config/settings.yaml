@@ -17,9 +17,10 @@ data:
   test_path: "ml_transformed/test.parquet"
   target_col: "trip_duration_min"
   trained_on_range: "2023-01 to 2025-12"
-  max_rows_train: 100000
-  max_rows_val: 30000
-  max_rows_test: 30000
+  # Smoke-test row caps for quick end-to-end verification.
+  max_rows_train: 1000
+  max_rows_val: 200
+  max_rows_test: 200
   sample_fraction: null
 
 # ---------------------------------------------------------------------------
@@ -59,11 +60,20 @@ evaluation:
 training:
   random_state: 42
   models_dir: "artifacts/models"
-  champion_config_path: "src/mlflow/champion.json"
+  champion_config_path: "src/hpo/champion.json"
   metric_thresholds:
     min_r2: 0.0
     max_rmse: 999999.0
     max_mae: 999999.0
+
+# ---------------------------------------------------------------------------
+# Data drift detection (Evidently AI)
+# ---------------------------------------------------------------------------
+drift:
+  max_share_drifted: 0.3
+  target_drift_pvalue: 0.05
+  max_rows_reference: 50000
+  max_rows_current: 50000
 
 # ---------------------------------------------------------------------------
 # Shared pipeline metadata output (used by Airflow stages)

@@ -13,10 +13,8 @@ Usage::
 
 import importlib
 import json
-import os
 import sys
-from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -31,16 +29,14 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.config.config import ChampionConfig, PipelineConfig
-from src.utils.mlflow_client import load_external_mlflow
+from src.utils.base_pipeline import BasePipeline, mlflow
 from src.utils.quality_gate import QualityGate
 from src.utils.spark_utils import (
     SparkUtils,
     build_stage_metadata,
-    get_pipeline_run_id,
     write_stage_metadata,
 )
 
-mlflow = load_external_mlflow()
 importlib.import_module("mlflow.sklearn")
 
 
@@ -91,68 +87,20 @@ class EvaluationResult:
 # ---------------------------------------------------------------------------
 
 
-class ModelEvaluationPipeline:
+class ModelEvaluationPipeline(BasePipeline):
     """Evaluates the newly trained model against the registered Production model.
 
     Compares RMSE, MAE, R2 and runs the quality gate. Decides whether
     the new model should be promoted to Production in the registry.
     """
 
-    EXPERIMENT_NAME = "pipeline"
-    REGISTERED_MODEL_NAME = "nyc-taxi-trip-duration"
-
     def __init__(
         self,
         pipeline_config: PipelineConfig,
         champion_config: ChampionConfig,
     ) -> None:
-        self.config = pipeline_config
-        self.champion = champion_config
-        self.timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        self.pipeline_run_id = get_pipeline_run_id(strict=False)
-        if not self.pipeline_run_id:
-            self.pipeline_run_id = (
-                self.champion.mlflow.pipeline_run_id
-                if self.champion.mlflow and self.champion.mlflow.pipeline_run_id
-                else (
-                    self.champion.mlflow.experiment_name
-                    if self.champion.mlflow and self.champion.mlflow.experiment_name
-                    else self.timestamp
-                )
-            )
+        super().__init__(pipeline_config, champion_config)
         self.spark = SparkUtils(app_name="nyc-taxi-pipeline-evaluation").spark
-        self._setup_mlflow()
-
-    # -- MLflow setup --------------------------------------------------------
-
-    def _load_env_token(self) -> str:
-        key = self.config.tracking.token_env_key
-        token = os.getenv(key)
-        if token:
-            return token.strip()
-
-        env_path = Path(self.config.tracking.env_file_path)
-        if not env_path.exists():
-            raise ValueError(f"Missing token and {env_path} not found. Set {key} in env or .env.")
-
-        for line in env_path.read_text(encoding="utf-8").splitlines():
-            stripped = line.strip()
-            if not stripped or stripped.startswith("#") or "=" not in stripped:
-                continue
-            k, v = stripped.split("=", 1)
-            if k.strip() == key:
-                token = v.strip().strip('"').strip("'")
-                if token:
-                    return token
-                break
-
-        raise ValueError(f"{key} is missing/empty in {env_path}.")
-
-    def _setup_mlflow(self) -> None:
-        token = self._load_env_token()
-        os.environ["MLFLOW_TRACKING_USERNAME"] = self.config.tracking.username
-        os.environ["MLFLOW_TRACKING_PASSWORD"] = token
-        mlflow.set_tracking_uri(self.config.tracking.tracking_uri)
 
     # -- Data loading --------------------------------------------------------
 
@@ -181,8 +129,20 @@ class ModelEvaluationPipeline:
     # -- Model loading -------------------------------------------------------
 
     def _load_new_model(self) -> Any:
-        """Load the newly trained model from artifact path."""
-        model_path = self.champion.artifacts.get("model_path", "")
+        """Load newly trained model path from training metadata."""
+        training_meta_path = (
+            Path("src/metadata")
+            / f"pipeline_{self.pipeline_run_id}"
+            / "model_training.json"
+        )
+        if not training_meta_path.exists():
+            raise FileNotFoundError(
+                f"Training metadata not found at '{training_meta_path}'. "
+                "Run model_training first."
+            )
+        with training_meta_path.open("r", encoding="utf-8") as f:
+            training_meta = json.load(f)
+        model_path = training_meta.get("artifacts", {}).get("model_path", "")
         if not model_path or not Path(model_path).exists():
             raise FileNotFoundError(
                 f"New model artifact not found at '{model_path}'. "
@@ -364,9 +324,13 @@ class ModelEvaluationPipeline:
         print(f"[evaluation] should register: {should_register}")
 
         # 7. Log to MLflow
-        mlflow.set_experiment(self.EXPERIMENT_NAME)
+        parent_run_id = self._get_or_create_parent_run()
+        mlflow.set_experiment(self.experiment_name)
 
-        with mlflow.start_run(run_name=f"evaluation_{self.timestamp}") as run:
+        with mlflow.start_run(
+            run_name=f"evaluation_{self.timestamp}",
+            tags={"mlflow.parentRunId": parent_run_id},
+        ) as run:
             mlflow.set_tag("project", "NYC-YELLOW-TAXI-MLOPS")
             mlflow.set_tag("repo", self.config.tracking.repo_name)
             mlflow.set_tag("pipeline_stage", "model_evaluation")
@@ -423,7 +387,6 @@ class ModelEvaluationPipeline:
                 stage="model_evaluation",
                 pipeline_run_id=self.pipeline_run_id,
                 run_id=run.info.run_id,
-                experiment_name=self.EXPERIMENT_NAME,
                 created_at_utc=self.timestamp,
                 data_rows={"test_rows": len(x_test)},
                 metrics={
@@ -434,22 +397,16 @@ class ModelEvaluationPipeline:
                         "mae": (old_metrics["mae"] - new_metrics["mae"]) if old_metrics else None,
                         "r2": (new_metrics["r2"] - old_metrics["r2"]) if old_metrics else None,
                     },
-                },
-                artifacts={
-                    "metadata_path": str(meta_path),
-                    "champion_path": self.config.training.champion_config_path,
-                },
-                status="success",
-                error=None,
-                extra={
                     "quality_gate_passed": gate_result.passed,
                     "is_new_better": comparison.is_new_better,
                     "should_register": should_register,
                     "decision_reason": comparison.decision_reason,
-                    "policy_summary": comparison.summary,
-                    "policy_metric_details": [asdict(mc) for mc in comparison.metric_comparisons],
-                    "model_family": self.champion.model_family,
                 },
+                artifacts={
+                    "compared_against_model": self.REGISTERED_MODEL_NAME,
+                },
+                status="success",
+                error=None,
             )
             meta_path = write_stage_metadata(
                 stage_file_name="model_evaluation.json",
@@ -457,17 +414,6 @@ class ModelEvaluationPipeline:
                 pipeline_run_id=self.pipeline_run_id,
             )
             mlflow.log_artifact(str(meta_path))
-
-            # 9. Update champion_config with test metrics
-            self.champion.metrics.test = new_metrics
-            self.champion.quality_gate = {
-                "passed": gate_result.passed,
-                "violations": gate_result.violations,
-            }
-            self.champion.training_info["should_register"] = should_register
-            self.champion.training_info["evaluation_run_id"] = run.info.run_id
-            self.champion.training_info["decision_reason"] = comparison.decision_reason
-            self.champion.save(self.config.training.champion_config_path)
 
             print(f"[evaluation] metadata saved to {meta_path}")
             print(f"[evaluation] MLflow run_id={run.info.run_id}")

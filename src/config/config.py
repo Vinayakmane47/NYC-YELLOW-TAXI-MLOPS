@@ -59,7 +59,7 @@ class TrainingConfig(BaseModel):
 
     random_state: int = 42
     models_dir: str = "artifacts/models"
-    champion_config_path: str = "src/mlflow/champion.json"
+    champion_config_path: str = "src/hpo/champion.json"
     metric_thresholds: MetricThresholds = Field(default_factory=MetricThresholds)
     model_config = {"extra": "forbid"}
 
@@ -108,6 +108,16 @@ class EvaluationPolicyConfig(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class DriftConfig(BaseModel):
+    """Thresholds and limits for Evidently data drift detection."""
+
+    max_share_drifted: float = 0.3
+    target_drift_pvalue: float = 0.05
+    max_rows_reference: int = 50_000
+    max_rows_current: int = 50_000
+    model_config = {"extra": "forbid"}
+
+
 class MetadataConfig(BaseModel):
     """
     Shared metadata output settings for Airflow DAG stages.
@@ -141,6 +151,7 @@ class PipelineConfig(BaseModel):
     transformation: TransformationConfig = Field(default_factory=TransformationConfig)
     ml_transformation: MlTransformConfig = Field(default_factory=MlTransformConfig)
     evaluation: EvaluationPolicyConfig = Field(default_factory=EvaluationPolicyConfig)
+    drift: DriftConfig = Field(default_factory=DriftConfig)
     metadata: MetadataConfig = Field(default_factory=MetadataConfig)
 
     model_config = {"extra": "forbid"}
@@ -203,7 +214,7 @@ class ChampionConfig(BaseModel):
 
     Usage::
 
-        champion = ChampionConfig.load("src/mlflow/champion.json")
+        champion = ChampionConfig.load("src/hpo/champion.json")
         print(champion.model_family, champion.params)
     """
 
@@ -231,7 +242,7 @@ class ChampionConfig(BaseModel):
     model_config = {"extra": "allow"}
 
     @classmethod
-    def load(cls, path: str = "src/mlflow/champion.json") -> "ChampionConfig":
+    def load(cls, path: str = "src/hpo/champion.json") -> "ChampionConfig":
         """Load and validate champion.json."""
         config_path = Path(path)
         if not config_path.exists():
@@ -240,7 +251,7 @@ class ChampionConfig(BaseModel):
             raw = json.load(f)
         return cls.model_validate(raw)
 
-    def save(self, path: str = "src/mlflow/champion.json") -> None:
+    def save(self, path: str = "src/hpo/champion.json") -> None:
         """Write current state back to JSON."""
         config_path = Path(path)
         config_path.parent.mkdir(parents=True, exist_ok=True)

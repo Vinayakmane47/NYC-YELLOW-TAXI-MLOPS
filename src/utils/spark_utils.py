@@ -119,7 +119,7 @@ def get_pipeline_run_id(env_key: str = "PIPELINE_RUN_ID", strict: bool = True) -
             f"Missing required environment variable '{env_key}'. "
             "Set it in Airflow so all stages write to the same metadata folder."
         )
-    return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    return datetime.now(timezone.utc).strftime("%H%M%d%m%Y")
 
 
 def get_pipeline_metadata_dir(
@@ -136,29 +136,24 @@ def build_stage_metadata(
     stage: str,
     pipeline_run_id: str,
     run_id: str,
-    experiment_name: str = "",
     created_at_utc: str = "",
     data_rows: Dict[str, Any] | None = None,
     metrics: Dict[str, Any] | None = None,
     artifacts: Dict[str, Any] | None = None,
     status: str = "success",
     error: Any = None,
-    extra: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     payload: Dict[str, Any] = {
         "stage": stage,
         "pipeline_run_id": pipeline_run_id,
         "run_id": run_id,
-        "experiment_name": experiment_name,
         "created_at_utc": created_at_utc or datetime.now(timezone.utc).isoformat(),
+        "status": status,
         "data_rows": data_rows or {},
         "metrics": metrics or {},
         "artifacts": artifacts or {},
-        "status": status,
         "error": error,
     }
-    if extra:
-        payload.update(extra)
     return payload
 
 

@@ -37,7 +37,7 @@ class MetricThresholds(BaseModel):
 class TrainingConfig(BaseModel):
     n_trials_per_model: int = 25
     random_state: int = 42
-    champion_config_path: str = "src/mlflow/champion.json"
+    champion_config_path: str = "src/hpo/champion.json"
     metric_thresholds: MetricThresholds = Field(default_factory=MetricThresholds)
     model_config = {"extra": "forbid"}
 
@@ -68,7 +68,7 @@ class MlflowPipelineConfig(BaseModel):
     model_config = {"extra": "forbid"}
 
     @classmethod
-    def from_yaml(cls, path: str = "src/mlflow/config_mlflow.yaml") -> "MlflowPipelineConfig":
+    def from_yaml(cls, path: str = "src/hpo/config_mlflow.yaml") -> "MlflowPipelineConfig":
         config_path = Path(path)
         if not config_path.exists():
             raise FileNotFoundError(f"Config file not found: {path}")
