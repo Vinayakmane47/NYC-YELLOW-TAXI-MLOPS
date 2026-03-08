@@ -11,19 +11,13 @@ Usage::
 """
 
 import json
-import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 from evidently import Report
 from evidently.presets import DataDriftPreset
-
-# Ensure project root is importable.
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.config.config import ChampionConfig, PipelineConfig
 from src.utils.base_pipeline import BasePipeline, mlflow
@@ -33,7 +27,6 @@ from src.utils.spark_utils import (
     build_stage_metadata,
     write_stage_metadata,
 )
-
 
 # ---------------------------------------------------------------------------
 # Result dataclass
@@ -49,7 +42,7 @@ class DriftResult:
     n_drifted: int
     n_columns: int
     drifted_columns: List[str]
-    target_drift_pvalue: float | None
+    target_drift_pvalue: Optional[float]
     drift_gate_passed: bool
     violations: List[str]
     report_path: str
@@ -124,7 +117,7 @@ class DriftDetectionPipeline(BasePipeline):
         share_drifted = 0.0
         per_column: Dict[str, Dict] = {}
         drifted_columns: List[str] = []
-        target_pvalue: float | None = None
+        target_pvalue: Optional[float] = None
         target_col = self.config.data.target_col
 
         for _key, val in results.items():
@@ -217,7 +210,7 @@ class DriftDetectionPipeline(BasePipeline):
         mlflow.set_experiment(self.experiment_name)
 
         with mlflow.start_run(
-            run_name=f"drift_{self.timestamp}",
+            run_name=f"drift_{self.pipeline_run_id}",
             tags={"mlflow.parentRunId": parent_run_id},
         ) as run:
             mlflow.set_tag("project", "NYC-YELLOW-TAXI-MLOPS")
@@ -295,8 +288,11 @@ class DriftDetectionPipeline(BasePipeline):
 
     def close(self) -> None:
         """Stop Spark session."""
-        if self.spark:
-            self.spark.stop()
+        try:
+            if self.spark:
+                self.spark.stop()
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------

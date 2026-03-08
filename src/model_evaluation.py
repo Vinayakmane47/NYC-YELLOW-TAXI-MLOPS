@@ -13,23 +13,16 @@ Usage::
 
 import importlib
 import json
-import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import joblib
-import numpy as np
 import pandas as pd
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-
-# Ensure project root is importable.
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.config.config import ChampionConfig, PipelineConfig
 from src.utils.base_pipeline import BasePipeline, mlflow
+from src.utils.metrics import compute_regression_metrics
 from src.utils.quality_gate import QualityGate
 from src.utils.spark_utils import (
     SparkUtils,
@@ -166,15 +159,6 @@ class ModelEvaluationPipeline(BasePipeline):
             print(f"[evaluation] no registered Production model found: {e}")
             return None
 
-    # -- Metrics -------------------------------------------------------------
-
-    def _compute_metrics(self, y_true: pd.Series, y_pred: np.ndarray) -> Dict[str, float]:
-        return {
-            "rmse": float(np.sqrt(mean_squared_error(y_true, y_pred))),
-            "mae": float(mean_absolute_error(y_true, y_pred)),
-            "r2": float(r2_score(y_true, y_pred)),
-        }
-
     # -- Model comparison ----------------------------------------------------
 
     def _compare_models(
@@ -286,7 +270,7 @@ class ModelEvaluationPipeline(BasePipeline):
         # 3. Predict with new model
         print("[evaluation] predicting with new model...")
         new_pred = new_model.predict(x_test)
-        new_metrics = self._compute_metrics(y_test, new_pred)
+        new_metrics = compute_regression_metrics(y_test, new_pred)
         print(
             f"[evaluation] new model: "
             f"rmse={new_metrics['rmse']:.4f} "
@@ -299,7 +283,7 @@ class ModelEvaluationPipeline(BasePipeline):
         if old_model is not None:
             print("[evaluation] predicting with registered model...")
             old_pred = old_model.predict(x_test)
-            old_metrics = self._compute_metrics(y_test, old_pred)
+            old_metrics = compute_regression_metrics(y_test, old_pred)
             print(
                 f"[evaluation] registered model: "
                 f"rmse={old_metrics['rmse']:.4f} "
@@ -328,7 +312,7 @@ class ModelEvaluationPipeline(BasePipeline):
         mlflow.set_experiment(self.experiment_name)
 
         with mlflow.start_run(
-            run_name=f"evaluation_{self.timestamp}",
+            run_name=f"evaluation_{self.pipeline_run_id}",
             tags={"mlflow.parentRunId": parent_run_id},
         ) as run:
             mlflow.set_tag("project", "NYC-YELLOW-TAXI-MLOPS")
@@ -422,8 +406,11 @@ class ModelEvaluationPipeline(BasePipeline):
 
     def close(self) -> None:
         """Stop Spark session."""
-        if self.spark:
-            self.spark.stop()
+        try:
+            if self.spark:
+                self.spark.stop()
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------

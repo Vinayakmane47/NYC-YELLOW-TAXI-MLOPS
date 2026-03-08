@@ -12,44 +12,32 @@ The PIPELINE_RUN_ID is passed via DAG conf from DAG A so all metadata
 lands in the same pipeline folder.
 """
 
-import os
-import sys
 from datetime import datetime, timedelta
 
-from airflow import DAG
 from airflow.operators.python import PythonOperator
+from dag_utils import set_pipeline_run_id
 
-# Add project root to Python path for imports
-sys.path.insert(0, '/opt/airflow/src')
-sys.path.insert(0, '/opt/airflow')
-
-from src.model_training import main as model_training_main
+from airflow import DAG
 from src.model_evaluation import main as model_evaluation_main
 from src.model_registry import main as model_registry_main
-
-
-def _set_pipeline_run_id(**context):
-    """Read PIPELINE_RUN_ID from DAG conf (passed by DAG A) or fallback to ds_nodash."""
-    run_id = context['dag_run'].conf.get('pipeline_run_id', context['ds_nodash'])
-    os.environ['PIPELINE_RUN_ID'] = run_id
-    print(f"PIPELINE_RUN_ID set to {run_id}")
+from src.model_training import main as model_training_main
 
 
 def run_model_training(**context):
     """Train champion model from champion.json."""
-    _set_pipeline_run_id(**context)
+    set_pipeline_run_id(**context)
     model_training_main()
 
 
 def run_model_evaluation(**context):
     """Evaluate new model against registered Production model."""
-    _set_pipeline_run_id(**context)
+    set_pipeline_run_id(**context)
     model_evaluation_main()
 
 
 def run_model_registry(**context):
     """Register and promote model in MLflow Model Registry."""
-    _set_pipeline_run_id(**context)
+    set_pipeline_run_id(**context)
     model_registry_main()
 
 

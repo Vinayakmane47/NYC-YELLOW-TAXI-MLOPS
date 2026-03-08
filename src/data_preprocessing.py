@@ -1,16 +1,14 @@
-import shutil
-import tempfile
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Iterable, List
+from typing import List
 
-from pyspark.sql import DataFrame, functions as F
+from pyspark.sql import DataFrame
+from pyspark.sql import functions as F
 
-from utils.spark_utils import (
+from src.utils.io_utils import list_parquet_files, path_exists, write_single_parquet
+from src.utils.spark_utils import (
     SparkUtils,
     build_stage_metadata,
     collect_dataframe_metadata,
-    collect_file_sizes,
     get_pipeline_run_id,
     write_stage_metadata,
 )
@@ -19,20 +17,13 @@ from utils.spark_utils import (
 class DataPreprocessing:
     def __init__(
         self,
-        data_dir: str = "data",
-        output_dir: str = "silver",
+        data_dir: str = "s3a://bronze",
+        output_dir: str = "s3a://silver",
         app_name: str = "nyc-taxi-data-preprocessing",
     ):
-        self.data_dir = Path(data_dir)
-        self.output_dir = Path(output_dir)
+        self.data_dir = data_dir
+        self.output_dir = output_dir
         self.spark = SparkUtils(app_name).spark
-
-    def _list_input_files(self) -> List[Path]:
-        if not self.data_dir.exists():
-            return []
-        return sorted(
-            [path for path in self.data_dir.rglob("trip_*.parquet") if path.is_file()]
-        )
 
     def _clean_data(self, df: DataFrame) -> DataFrame:
         base = (
@@ -100,33 +91,12 @@ class DataPreprocessing:
 
         return base
 
-    def _write_single_parquet(self, df: DataFrame, output_path: Path) -> None:
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-
-        if output_path.exists():
-            if output_path.is_dir():
-                shutil.rmtree(output_path)
-            else:
-                output_path.unlink()
-
-        temp_dir = Path(tempfile.mkdtemp(dir=str(output_path.parent)))
-        try:
-            df.coalesce(1).write.mode("overwrite").option("compression", "uncompressed").parquet(
-                str(temp_dir)
-            )
-            part_files = list(temp_dir.glob("part-*.parquet"))
-            if not part_files:
-                raise RuntimeError(f"No parquet part file found in {temp_dir}")
-            shutil.move(str(part_files[0]), str(output_path))
-        finally:
-            shutil.rmtree(temp_dir, ignore_errors=True)
-
     def process_all(self) -> None:
         run_start = datetime.now(timezone.utc)
         pipeline_run_id = get_pipeline_run_id()
         status = "success"
         error = None
-        input_files = self._list_input_files()
+        input_files = list_parquet_files(self.data_dir)
         if not input_files:
             print(f"No parquet files found under {self.data_dir}")
             run_end = datetime.now(timezone.utc)
@@ -138,8 +108,8 @@ class DataPreprocessing:
                 data_rows={"processed_files": 0},
                 metrics={"duration_seconds": (run_end - run_start).total_seconds()},
                 artifacts={
-                    "input_root_dir": str(self.data_dir),
-                    "output_root_dir": str(self.output_dir),
+                    "input_root_dir": self.data_dir,
+                    "output_root_dir": self.output_dir,
                     "files": [],
                     "total_bytes": 0,
                 },
@@ -153,22 +123,33 @@ class DataPreprocessing:
             )
             return
 
-        output_files: List[Path] = []
+        output_files: List[str] = []
+        skipped = 0
         data_profile = {}
         try:
             print(f"Found {len(input_files)} files. Writing cleaned data to {self.output_dir}")
             for input_path in input_files:
-                rel_path = input_path.relative_to(self.data_dir)
-                output_path = self.output_dir / rel_path
+                rel_path = input_path.replace(self.data_dir, "").lstrip("/")
+                output_path = f"{self.output_dir}/{rel_path}"
+
+                if path_exists(output_path):
+                    print(f"Skipping {rel_path} - already exists in output")
+                    skipped += 1
+                    output_files.append(output_path)
+                    continue
+
                 print(f"Processing {input_path} -> {output_path}")
-                df = self.spark.read.parquet(str(input_path))
+                df = self.spark.read.parquet(input_path)
                 cleaned = self._clean_data(df)
-                self._write_single_parquet(cleaned, output_path)
+                write_single_parquet(cleaned, output_path)
                 output_files.append(output_path)
 
             if output_files:
-                df = self.spark.read.parquet(*[str(path) for path in output_files])
-                data_profile = collect_dataframe_metadata(df)
+                # Profile only the last file to avoid OOM from loading all files
+                sample_df = self.spark.read.parquet(output_files[-1])
+                data_profile = collect_dataframe_metadata(sample_df)
+                data_profile["profiled_file"] = output_files[-1]
+                data_profile["total_output_files"] = len(output_files)
         except Exception as exc:  # noqa: BLE001
             status = "failed"
             error = str(exc)
@@ -189,10 +170,8 @@ class DataPreprocessing:
                     "data_profile": data_profile,
                 },
                 artifacts={
-                    "input_root_dir": str(self.data_dir),
-                    "output_root_dir": str(self.output_dir),
-                    "input_sizes": collect_file_sizes(input_files),
-                    "output_sizes": collect_file_sizes(output_files),
+                    "input_root_dir": self.data_dir,
+                    "output_root_dir": self.output_dir,
                 },
                 status=status,
                 error=error,
@@ -204,11 +183,16 @@ class DataPreprocessing:
             )
             print(f"[data_preprocessing] metadata saved to {metadata_path}")
 
+        if skipped:
+            print(f"Skipped {skipped} files (already exist in output)")
         print("Data preprocessing completed.")
 
     def close(self) -> None:
-        if self.spark:
-            self.spark.stop()
+        try:
+            if self.spark:
+                self.spark.stop()
+        except Exception:
+            pass
 
 
 def main() -> None:
@@ -221,16 +205,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-
-
-
-
-
-
-
-
-
-
-
-

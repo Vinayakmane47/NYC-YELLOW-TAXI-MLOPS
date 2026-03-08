@@ -15,6 +15,11 @@ x-airflow-common:
     AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
     AIRFLOW__WEBSERVER__SECRET_KEY: 'your-secret-key-change-this'
     PYTHONPATH: '/opt/airflow:/opt/airflow/src:/opt/spark/python:/opt/spark/python/lib/py4j-0.10.9.7-src.zip'
+    MINIO_ENDPOINT: 'http://minio:9000'
+    MINIO_ACCESS_KEY: 'minioadmin'
+    MINIO_SECRET_KEY: 'minioadmin'
+    DAGSHUB_TOKEN: ${DAGSHUB_TOKEN}
+    _PIP_ADDITIONAL_REQUIREMENTS: ''
     JAVA_HOME: '/usr/lib/jvm/java-17-openjdk-amd64'
     SPARK_HOME: '/opt/spark'
     SPARK_VERSION: '3.4.1'
@@ -25,16 +30,41 @@ x-airflow-common:
     - ${AIRFLOW_PROJ_DIR:-.}/airflow/config:/opt/airflow/config
     - ${AIRFLOW_PROJ_DIR:-.}/airflow/plugins:/opt/airflow/plugins
     - ${AIRFLOW_PROJ_DIR:-.}/src:/opt/airflow/src
-    - ${AIRFLOW_PROJ_DIR:-.}/data:/opt/airflow/data
-    - ${AIRFLOW_PROJ_DIR:-.}/silver:/opt/airflow/silver
-    - ${AIRFLOW_PROJ_DIR:-.}/gold:/opt/airflow/gold
   user: "${AIRFLOW_UID:-50000}:0"
   depends_on:
     &airflow-common-depends-on
     postgres:
       condition: service_healthy
+    minio:
+      condition: service_healthy
 
 services:
+  minio:
+    image: minio/minio:latest
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    volumes:
+      - minio-data:/data
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      retries: 5
+      start_period: 5s
+    restart: always
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: /bin/sh
+    command: -c "mc alias set local http://minio:9000 minioadmin minioadmin && mc mb --ignore-existing local/bronze && mc mb --ignore-existing local/silver && mc mb --ignore-existing local/gold && mc mb --ignore-existing local/ml-transformed"
+
   postgres:
     image: postgres:16
     environment:
@@ -119,5 +149,70 @@ services:
       - -c
       - airflow
 
+  # -- Inference & Monitoring ------------------------------------------------
+
+  inference-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.inference
+    image: nyc-taxi-inference:latest
+    ports:
+      - "8000:8000"
+    environment:
+      DAGSHUB_TOKEN: ${DAGSHUB_TOKEN}
+    volumes:
+      - ./src/metadata:/app/src/metadata
+      - ./src/hpo/champion.json:/app/src/hpo/champion.json
+      - ./.env:/app/.env:ro
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    restart: always
+
+  prometheus:
+    image: prom/prometheus:latest
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=30d'
+    restart: always
+
+  grafana:
+    image: grafana/grafana:latest
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/inference.json
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    restart: always
+
+  locust:
+    image: locustio/locust
+    ports:
+      - "8089:8089"
+    volumes:
+      - ./src/inference/locustfile.py:/mnt/locust/locustfile.py
+    command: -f /mnt/locust/locustfile.py --host=http://inference-api:8000
+    depends_on:
+      - inference-api
+    restart: unless-stopped
+
 volumes:
   postgres-db-volume:
+  minio-data:
+  prometheus-data:
+  grafana-data:

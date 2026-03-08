@@ -1,0 +1,501 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NYC Yellow Taxi - Trip Duration Predictor</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #0a0c10;
+            color: #c9d1d9;
+            min-height: 100vh;
+        }
+
+        /* --- Header --- */
+        .header {
+            background: #161b22;
+            border-bottom: 1px solid #30363d;
+            padding: 20px 0;
+        }
+        .header-inner {
+            max-width: 960px;
+            margin: 0 auto;
+            padding: 0 24px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .header h1 {
+            font-size: 20px;
+            font-weight: 600;
+            color: #f0c000;
+        }
+        .header .subtitle {
+            font-size: 13px;
+            color: #8b949e;
+            margin-top: 2px;
+        }
+        .model-badge {
+            background: #1c2128;
+            border: 1px solid #30363d;
+            border-radius: 20px;
+            padding: 6px 16px;
+            font-size: 12px;
+            color: #8b949e;
+            white-space: nowrap;
+        }
+
+        /* --- Layout --- */
+        .container {
+            max-width: 960px;
+            margin: 0 auto;
+            padding: 24px;
+        }
+        .main-layout {
+            display: grid;
+            grid-template-columns: 1fr 340px;
+            gap: 24px;
+            align-items: start;
+        }
+
+        /* --- Cards --- */
+        .card {
+            background: #161b22;
+            border: 1px solid #30363d;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        .card-header {
+            padding: 14px 20px;
+            border-bottom: 1px solid #30363d;
+            font-size: 13px;
+            font-weight: 600;
+            color: #8b949e;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .card-body { padding: 20px; }
+
+        /* --- Form --- */
+        .form-row {
+            display: grid;
+            gap: 14px;
+            margin-bottom: 14px;
+        }
+        .form-row.cols-2 { grid-template-columns: 1fr 1fr; }
+        .form-row.cols-3 { grid-template-columns: 1fr 1fr 1fr; }
+        .form-row:last-child { margin-bottom: 0; }
+
+        .form-group label {
+            display: block;
+            font-size: 12px;
+            font-weight: 500;
+            color: #8b949e;
+            margin-bottom: 5px;
+        }
+        .form-group input,
+        .form-group select {
+            width: 100%;
+            background: #0d1117;
+            border: 1px solid #30363d;
+            border-radius: 6px;
+            padding: 9px 12px;
+            color: #c9d1d9;
+            font-size: 14px;
+            font-family: inherit;
+            transition: border-color 0.15s;
+        }
+        .form-group input:focus,
+        .form-group select:focus {
+            outline: none;
+            border-color: #f0c000;
+            box-shadow: 0 0 0 2px rgba(240, 192, 0, 0.15);
+        }
+
+        .divider {
+            border: none;
+            border-top: 1px solid #21262d;
+            margin: 18px 0;
+        }
+
+        /* --- Button --- */
+        .btn-predict {
+            display: block;
+            width: 100%;
+            background: #f0c000;
+            color: #0a0c10;
+            border: none;
+            border-radius: 6px;
+            padding: 12px;
+            font-size: 15px;
+            font-weight: 600;
+            font-family: inherit;
+            cursor: pointer;
+            transition: background 0.15s, transform 0.1s;
+        }
+        .btn-predict:hover { background: #e0b400; }
+        .btn-predict:active { transform: scale(0.98); }
+        .btn-predict:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        /* --- Result panel --- */
+        .result-panel {
+            position: sticky;
+            top: 24px;
+        }
+        .result-empty {
+            text-align: center;
+            padding: 40px 20px;
+            color: #484f58;
+        }
+        .result-empty .icon {
+            font-size: 48px;
+            margin-bottom: 12px;
+            opacity: 0.4;
+        }
+        .result-content {
+            display: none;
+            text-align: center;
+            padding: 32px 20px;
+        }
+        .result-content.visible { display: block; }
+        .result-label {
+            font-size: 12px;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: #8b949e;
+            margin-bottom: 8px;
+        }
+        .result-value {
+            font-size: 52px;
+            font-weight: 700;
+            color: #f0c000;
+            line-height: 1;
+        }
+        .result-unit {
+            font-size: 16px;
+            color: #8b949e;
+            margin-top: 6px;
+        }
+        .result-details {
+            margin-top: 20px;
+            border-top: 1px solid #21262d;
+            padding-top: 16px;
+        }
+        .result-detail-row {
+            display: flex;
+            justify-content: space-between;
+            font-size: 13px;
+            padding: 4px 0;
+        }
+        .result-detail-row .label { color: #8b949e; }
+        .result-detail-row .value { color: #c9d1d9; font-weight: 500; }
+
+        /* --- Error --- */
+        .error-msg {
+            display: none;
+            background: #3d1219;
+            border: 1px solid #6e2028;
+            border-radius: 6px;
+            padding: 10px 14px;
+            color: #f85149;
+            font-size: 13px;
+            margin-top: 14px;
+        }
+        .error-msg.visible { display: block; }
+
+        /* --- Loading --- */
+        .loading-overlay {
+            display: none;
+            text-align: center;
+            padding: 32px 20px;
+        }
+        .loading-overlay.visible { display: block; }
+        .spinner {
+            width: 28px;
+            height: 28px;
+            border: 3px solid #30363d;
+            border-top-color: #f0c000;
+            border-radius: 50%;
+            animation: spin 0.7s linear infinite;
+            margin: 0 auto 10px;
+        }
+        .loading-text { color: #8b949e; font-size: 13px; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* --- Footer --- */
+        .footer {
+            text-align: center;
+            padding: 20px;
+            color: #30363d;
+            font-size: 12px;
+            margin-top: 24px;
+        }
+
+        /* --- Responsive --- */
+        @media (max-width: 768px) {
+            .main-layout {
+                grid-template-columns: 1fr;
+            }
+            .result-panel { position: static; }
+            .header-inner { flex-direction: column; align-items: flex-start; gap: 8px; }
+            .form-row.cols-3 { grid-template-columns: 1fr 1fr; }
+            .result-value { font-size: 40px; }
+        }
+        @media (max-width: 480px) {
+            .form-row.cols-2, .form-row.cols-3 { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <div class="header-inner">
+            <div>
+                <h1>NYC Taxi Trip Duration Predictor</h1>
+                <p class="subtitle">Predict how long your taxi ride will take</p>
+            </div>
+            {% if model_info %}
+            <span class="model-badge">
+                {{ model_info.get('model_family', 'N/A') }} {{ model_info.get('model_version', '') }}
+            </span>
+            {% endif %}
+        </div>
+    </div>
+
+    <div class="container">
+        <div class="main-layout">
+            <!-- Left: Form -->
+            <form id="predictForm">
+                <!-- Pickup -->
+                <div class="card" style="margin-bottom: 16px;">
+                    <div class="card-header">Pickup</div>
+                    <div class="card-body">
+                        <div class="form-row cols-2">
+                            <div class="form-group">
+                                <label for="pickup_date">Date</label>
+                                <input type="date" id="pickup_date" required>
+                            </div>
+                            <div class="form-group">
+                                <label for="pickup_time">Time</label>
+                                <input type="time" id="pickup_time" required>
+                            </div>
+                        </div>
+                        <div class="form-row cols-2">
+                            <div class="form-group">
+                                <label for="PULocationID">Pickup Zone ID</label>
+                                <input type="number" id="PULocationID" min="1" max="265" value="161" required>
+                            </div>
+                            <div class="form-group">
+                                <label for="DOLocationID">Dropoff Zone ID</label>
+                                <input type="number" id="DOLocationID" min="1" max="265" value="237" required>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Trip Info -->
+                <div class="card" style="margin-bottom: 16px;">
+                    <div class="card-header">Trip Info</div>
+                    <div class="card-body">
+                        <div class="form-row cols-3">
+                            <div class="form-group">
+                                <label for="trip_distance">Distance (mi)</label>
+                                <input type="number" id="trip_distance" step="0.1" min="0" value="3.5" required>
+                            </div>
+                            <div class="form-group">
+                                <label for="passenger_count">Passengers</label>
+                                <input type="number" id="passenger_count" min="0" max="9" value="1">
+                            </div>
+                            <div class="form-group">
+                                <label for="VendorID">Vendor</label>
+                                <select id="VendorID">
+                                    <option value="1">CMT (1)</option>
+                                    <option value="2" selected>VeriFone (2)</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="form-row cols-3">
+                            <div class="form-group">
+                                <label for="RatecodeID">Rate Code</label>
+                                <select id="RatecodeID">
+                                    <option value="1" selected>Standard</option>
+                                    <option value="2">JFK</option>
+                                    <option value="3">Newark</option>
+                                    <option value="4">Nassau/Westchester</option>
+                                    <option value="5">Negotiated</option>
+                                    <option value="6">Group ride</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="payment_type">Payment</label>
+                                <select id="payment_type">
+                                    <option value="1" selected>Credit card</option>
+                                    <option value="2">Cash</option>
+                                    <option value="3">No charge</option>
+                                    <option value="4">Dispute</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <label for="store_and_fwd_flag">Store & Fwd</label>
+                                <select id="store_and_fwd_flag">
+                                    <option value="N" selected>No</option>
+                                    <option value="Y">Yes</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Fees -->
+                <div class="card" style="margin-bottom: 16px;">
+                    <div class="card-header">Fees</div>
+                    <div class="card-body">
+                        <div class="form-row cols-3">
+                            <div class="form-group">
+                                <label for="tolls_amount">Tolls ($)</label>
+                                <input type="number" id="tolls_amount" step="0.01" min="0" value="0">
+                            </div>
+                            <div class="form-group">
+                                <label for="Airport_fee">Airport ($)</label>
+                                <input type="number" id="Airport_fee" step="0.01" min="0" value="0">
+                            </div>
+                            <div class="form-group">
+                                <label for="congestion_surcharge">Congestion ($)</label>
+                                <input type="number" id="congestion_surcharge" step="0.01" min="0" value="2.50">
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <button type="submit" class="btn-predict" id="btnPredict">Predict Duration</button>
+                <div class="error-msg" id="errorMsg"></div>
+            </form>
+
+            <!-- Right: Result -->
+            <div class="result-panel">
+                <div class="card">
+                    <div class="card-header">Prediction</div>
+
+                    <div class="result-empty" id="resultEmpty">
+                        <div class="icon">&#128663;</div>
+                        <p>Fill in trip details and click<br><strong>Predict Duration</strong></p>
+                    </div>
+
+                    <div class="loading-overlay" id="loading">
+                        <div class="spinner"></div>
+                        <div class="loading-text">Calculating...</div>
+                    </div>
+
+                    <div class="result-content" id="resultCard">
+                        <div class="result-label">Estimated Trip Duration</div>
+                        <div class="result-value" id="resultValue">--</div>
+                        <div class="result-unit">minutes</div>
+                        <div class="result-details">
+                            <div class="result-detail-row">
+                                <span class="label">Model</span>
+                                <span class="value" id="resultModel">--</span>
+                            </div>
+                            <div class="result-detail-row">
+                                <span class="label">Version</span>
+                                <span class="value" id="resultVersion">--</span>
+                            </div>
+                            <div class="result-detail-row">
+                                <span class="label">Distance</span>
+                                <span class="value" id="resultDistance">--</span>
+                            </div>
+                            <div class="result-detail-row">
+                                <span class="label">Route</span>
+                                <span class="value" id="resultRoute">--</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="footer">NYC Yellow Taxi MLOps Pipeline</div>
+
+    <script>
+        // Set defaults to now
+        const now = new Date();
+        document.getElementById('pickup_date').valueAsDate = now;
+        document.getElementById('pickup_time').value =
+            String(now.getHours()).padStart(2, '0') + ':' +
+            String(now.getMinutes()).padStart(2, '0');
+
+        document.getElementById('predictForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+
+            const btn = document.getElementById('btnPredict');
+            const loading = document.getElementById('loading');
+            const resultCard = document.getElementById('resultCard');
+            const resultEmpty = document.getElementById('resultEmpty');
+            const errorMsg = document.getElementById('errorMsg');
+
+            btn.disabled = true;
+            loading.classList.add('visible');
+            resultCard.classList.remove('visible');
+            resultEmpty.style.display = 'none';
+            errorMsg.classList.remove('visible');
+
+            const date = document.getElementById('pickup_date').value;
+            const time = document.getElementById('pickup_time').value;
+            const puId = document.getElementById('PULocationID').value;
+            const doId = document.getElementById('DOLocationID').value;
+            const dist = document.getElementById('trip_distance').value;
+
+            const payload = {
+                pickup_datetime: date + 'T' + time + ':00',
+                PULocationID: parseInt(puId),
+                DOLocationID: parseInt(doId),
+                trip_distance: parseFloat(dist),
+                passenger_count: parseInt(document.getElementById('passenger_count').value),
+                VendorID: parseInt(document.getElementById('VendorID').value),
+                RatecodeID: parseInt(document.getElementById('RatecodeID').value),
+                payment_type: parseInt(document.getElementById('payment_type').value),
+                store_and_fwd_flag: document.getElementById('store_and_fwd_flag').value,
+                tolls_amount: parseFloat(document.getElementById('tolls_amount').value),
+                Airport_fee: parseFloat(document.getElementById('Airport_fee').value),
+                congestion_surcharge: parseFloat(document.getElementById('congestion_surcharge').value),
+            };
+
+            try {
+                const resp = await fetch('/predict', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload),
+                });
+
+                if (!resp.ok) {
+                    const err = await resp.json();
+                    throw new Error(err.detail || 'Prediction failed');
+                }
+
+                const data = await resp.json();
+                document.getElementById('resultValue').textContent =
+                    data.predicted_duration_minutes.toFixed(1);
+                document.getElementById('resultModel').textContent = data.model_family;
+                document.getElementById('resultVersion').textContent = data.model_version;
+                document.getElementById('resultDistance').textContent = dist + ' mi';
+                document.getElementById('resultRoute').textContent =
+                    'Zone ' + puId + ' -> ' + doId;
+                resultCard.classList.add('visible');
+            } catch (err) {
+                errorMsg.textContent = err.message;
+                errorMsg.classList.add('visible');
+                resultEmpty.style.display = 'block';
+            } finally {
+                btn.disabled = false;
+                loading.classList.remove('visible');
+            }
+        });
+    </script>
+</body>
+</html>

@@ -1,18 +1,19 @@
 """
 Base pipeline class with shared MLflow setup and pipeline run ID resolution.
 
-Eliminates duplicated _load_env_token / _setup_mlflow / pipeline_run_id
-logic across model_evaluation.py and model_registry.py.
+Eliminates duplicated _setup_mlflow / pipeline_run_id logic across
+model_evaluation.py and model_registry.py.
 """
 
 import json
-import os
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 import mlflow
 
 from src.config.config import ChampionConfig, PipelineConfig
+from src.utils.mlflow_auth import setup_mlflow
 from src.utils.spark_utils import get_pipeline_run_id
 
 
@@ -20,6 +21,7 @@ class BasePipeline:
     """Common setup shared by evaluation and registry pipeline stages."""
 
     REGISTERED_MODEL_NAME = "nyc-taxi-trip-duration"
+    EXPERIMENT_NAME = "nyc-taxi-pipeline"
 
     def __init__(
         self,
@@ -29,21 +31,20 @@ class BasePipeline:
         self.config = pipeline_config
         self.champion = champion_config
         self._now = datetime.now(timezone.utc)
-        self.timestamp = self._now.strftime("%H%M%d%m%Y")
-        self.experiment_name = f"pipeline_{self._now.strftime('%d%m%Y')}"
-        self.run_name = f"run_{self._now.strftime('%H%M')}"
+        self.timestamp = self._now.isoformat()
         self.pipeline_run_id = self._resolve_pipeline_run_id()
+        self.experiment_name = self.EXPERIMENT_NAME
+        self.run_name = f"pipeline_{self.pipeline_run_id}"
         self._setup_mlflow()
 
     def _resolve_pipeline_run_id(self) -> str:
-        run_id = get_pipeline_run_id(strict=False)
-        if run_id:
-            return run_id
-        if self.champion.mlflow and self.champion.mlflow.pipeline_run_id:
-            return self.champion.mlflow.pipeline_run_id
-        if self.champion.mlflow and self.champion.mlflow.experiment_name:
-            return self.champion.mlflow.experiment_name
-        return self.timestamp
+        """Resolve pipeline run ID.
+
+        Priority:
+        1. PIPELINE_RUN_ID env var (set by Airflow DAG)
+        2. Auto-generated YYYYMMDD_HHMMSS fallback (for CLI runs)
+        """
+        return get_pipeline_run_id(strict=False)
 
     # -- Parent run management -----------------------------------------------
 
@@ -64,7 +65,7 @@ class BasePipeline:
         )
         print(f"[pipeline] parent run ID saved to {path}")
 
-    def _load_parent_run_id(self) -> str | None:
+    def _load_parent_run_id(self) -> Optional[str]:
         """Load a previously saved parent run ID (written by model_training)."""
         path = self._parent_run_path()
         if not path.exists():
@@ -95,34 +96,13 @@ class BasePipeline:
         print(f"[pipeline] created parent run {parent_run_id}")
         return parent_run_id
 
-    def _load_env_token(self) -> str:
-        key = self.config.tracking.token_env_key
-        token = os.getenv(key)
-        if token:
-            return token.strip()
-
-        env_path = Path(self.config.tracking.env_file_path)
-        if not env_path.exists():
-            raise ValueError(f"Missing token and {env_path} not found. Set {key} in env or .env.")
-
-        for line in env_path.read_text(encoding="utf-8").splitlines():
-            stripped = line.strip()
-            if not stripped or stripped.startswith("#") or "=" not in stripped:
-                continue
-            k, v = stripped.split("=", 1)
-            if k.strip() == key:
-                token = v.strip().strip('"').strip("'")
-                if token:
-                    return token
-                break
-
-        raise ValueError(f"{key} is missing/empty in {env_path}.")
-
     def _setup_mlflow(self) -> None:
-        token = self._load_env_token()
-        os.environ["MLFLOW_TRACKING_USERNAME"] = self.config.tracking.username
-        os.environ["MLFLOW_TRACKING_PASSWORD"] = token
-        mlflow.set_tracking_uri(self.config.tracking.tracking_uri)
+        setup_mlflow(
+            tracking_uri=self.config.tracking.tracking_uri,
+            username=self.config.tracking.username,
+            token_env_key=self.config.tracking.token_env_key,
+            env_file_paths=[self.config.tracking.env_file_path],
+        )
 
     def close(self) -> None:
-        pass
+        """No-op for base pipeline (Spark-using subclasses override)."""

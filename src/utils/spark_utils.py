@@ -1,32 +1,56 @@
 import json
 import os
-from pathlib import Path
 from datetime import datetime, timezone
-from typing import Dict, Iterable, List, Any
+from pathlib import Path
+from typing import Any, Dict, Iterable, Optional
 
-from pyspark.sql import SparkSession, DataFrame, functions as F
+from pyspark.sql import DataFrame, SparkSession
+from pyspark.sql import functions as F
 from pyspark.sql.types import NumericType
+
 
 ## create a spark session
 class SparkUtils:
-    def __init__(self, app_name: str = "nyc-taxi-data-ingestion"):
+    def __init__(
+        self,
+        app_name: str = "nyc-taxi-data-ingestion",
+        extra_conf: Optional[Dict[str, str]] = None,
+    ):
         self.app_name = app_name
+        self.extra_conf = extra_conf or {}
         self.spark = self._create_spark_session()
 
     def _create_spark_session(self) -> SparkSession:
         """
-        Create and configure Spark session.
-        
+        Create and configure Spark session with S3A/MinIO support.
+
         Returns:
             Configured SparkSession
         """
-        return (SparkSession.builder
-                .appName(self.app_name)
-                .master("local[*]")
-                .config("spark.sql.shuffle.partitions", "16")
-                .config("spark.driver.host", "localhost")
-                .config("spark.driver.bindAddress", "127.0.0.1")
-                .getOrCreate())
+        minio_endpoint = os.environ.get("MINIO_ENDPOINT", "http://localhost:9000")
+        minio_access_key = os.environ.get("MINIO_ACCESS_KEY", "minioadmin")
+        minio_secret_key = os.environ.get("MINIO_SECRET_KEY", "minioadmin")
+
+        builder = (
+            SparkSession.builder.appName(self.app_name)
+            .master("local[*]")
+            .config("spark.driver.memory", "2g")
+            .config("spark.sql.shuffle.partitions", "16")
+            .config("spark.driver.host", "localhost")
+            .config("spark.driver.bindAddress", "127.0.0.1")
+            .config("spark.hadoop.fs.s3a.endpoint", minio_endpoint)
+            .config("spark.hadoop.fs.s3a.access.key", minio_access_key)
+            .config("spark.hadoop.fs.s3a.secret.key", minio_secret_key)
+            .config("spark.hadoop.fs.s3a.path.style.access", "true")
+            .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
+            .config(
+                "spark.jars.packages",
+                "org.apache.hadoop:hadoop-aws:3.3.4,com.amazonaws:aws-java-sdk-bundle:1.12.262",
+            )
+        )
+        for key, value in self.extra_conf.items():
+            builder = builder.config(key, value)
+        return builder.getOrCreate()
 
 
 def _safe_json_value(value: Any) -> Any:
@@ -46,13 +70,9 @@ def collect_dataframe_metadata(df: DataFrame) -> Dict[str, Any]:
 
     null_exprs = [F.count(F.when(F.col(col).isNull(), col)).alias(col) for col in df.columns]
     null_counts_row = df.select(*null_exprs).collect()[0] if df.columns else None
-    null_counts = (
-        {col: int(null_counts_row[col]) for col in df.columns} if null_counts_row is not None else {}
-    )
+    null_counts = {col: int(null_counts_row[col]) for col in df.columns} if null_counts_row is not None else {}
 
-    numeric_cols = [
-        field.name for field in df.schema.fields if isinstance(field.dataType, NumericType)
-    ]
+    numeric_cols = [field.name for field in df.schema.fields if isinstance(field.dataType, NumericType)]
     stats: Dict[str, Dict[str, Any]] = {}
     if numeric_cols:
         agg_exprs = []
@@ -109,7 +129,12 @@ def write_metadata_json(metadata: Dict[str, Any], output_dir: Path, filename: st
 def get_pipeline_run_id(env_key: str = "PIPELINE_RUN_ID", strict: bool = True) -> str:
     """
     Read a shared pipeline run id from environment.
-    In Airflow, this should be injected once per DAG run and passed to every stage.
+
+    In Airflow, this is injected once per DAG run (YYYYMMDD format from ds_nodash)
+    and passed to every stage via ``set_pipeline_run_id``.
+
+    For manual / CLI runs the fallback uses ``YYYYMMDD_HHMMSS`` so folder names
+    stay human-readable and sort chronologically.
     """
     value = os.getenv(env_key, "").strip()
     if value:
@@ -119,7 +144,7 @@ def get_pipeline_run_id(env_key: str = "PIPELINE_RUN_ID", strict: bool = True) -
             f"Missing required environment variable '{env_key}'. "
             "Set it in Airflow so all stages write to the same metadata folder."
         )
-    return datetime.now(timezone.utc).strftime("%H%M%d%m%Y")
+    return datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
 
 
 def get_pipeline_metadata_dir(
@@ -137,9 +162,9 @@ def build_stage_metadata(
     pipeline_run_id: str,
     run_id: str,
     created_at_utc: str = "",
-    data_rows: Dict[str, Any] | None = None,
-    metrics: Dict[str, Any] | None = None,
-    artifacts: Dict[str, Any] | None = None,
+    data_rows: Optional[Dict[str, Any]] = None,
+    metrics: Optional[Dict[str, Any]] = None,
+    artifacts: Optional[Dict[str, Any]] = None,
     status: str = "success",
     error: Any = None,
 ) -> Dict[str, Any]:

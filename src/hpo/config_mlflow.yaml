@@ -10,8 +10,6 @@ tracking:
 
 # ---------------------------------------------------------------------------
 # Data loading
-# - Keep low for quick testing
-# - Increase for production training
 # ---------------------------------------------------------------------------
 data:
   train_path: "ml_transformed/train.parquet"
@@ -22,17 +20,14 @@ data:
   max_rows_train: 100000
   max_rows_val: 30000
   max_rows_test: 30000
-  # Optional Spark-side sampling before row cap. Use null to disable.
   sample_fraction: null
 
 # ---------------------------------------------------------------------------
 # Stage 1 (screening)
-# - Fast filter stage before expensive HPO
+# - Fast filter stage with capped data before expensive HPO
 # ---------------------------------------------------------------------------
 screening:
-  # Number of best HPO-eligible models to send to stage 2.
   top_n_for_hpo: 2
-  # Separate row caps for screening speed.
   row_cap_train: 20000
   row_cap_val: 10000
 
@@ -40,35 +35,29 @@ screening:
 # Promotion policy used in model_evaluation.py
 # ---------------------------------------------------------------------------
 evaluation:
-  # New model must improve RMSE by at least this amount.
   min_rmse_improvement: 0.0
-  # New model can regress MAE by at most this value.
   max_mae_regression: 0.0
-  # New model can regress R2 by at most this value.
   max_r2_regression: 0.0
 
 # ---------------------------------------------------------------------------
 # Stage 2 (HPO + final model artifact)
 # ---------------------------------------------------------------------------
 training:
-  n_trials_per_model: 3
+  n_trials_per_model: 50
+  cv_folds: 3
   random_state: 42
-  # Final selected model summary is written here.
   champion_config_path: "src/hpo/champion.json"
   metric_thresholds:
-    min_r2: 0.0
-    max_rmse: 999999.0
-    max_mae: 999999.0
+    min_r2: 0.3
+    max_rmse: 30.0
+    max_mae: 20.0
 
 # ---------------------------------------------------------------------------
-# HPO-eligible models
-# - Set enabled: false to skip model
-# - Add/remove model blocks as needed
+# HPO-eligible models (tuned with Optuna in stage 2)
 # ---------------------------------------------------------------------------
 models_to_train:
   - name: lightgbm
     enabled: true
-    # Used in stage 1 screening
     screening_fixed_params:
       n_estimators: 200
       learning_rate: 0.1
@@ -76,7 +65,6 @@ models_to_train:
       max_depth: -1
       n_jobs: -1
       verbosity: -1
-    # Used in stage 2 HPO
     search_space:
       n_estimators: { type: int, low: 200, high: 1200 }
       learning_rate: { type: float, low: 0.01, high: 0.2, log: true }
@@ -109,11 +97,25 @@ models_to_train:
     fixed_params:
       n_jobs: -1
 
+  - name: extra_trees
+    enabled: true
+    screening_fixed_params:
+      n_estimators: 120
+      max_depth: 12
+      n_jobs: -1
+    search_space:
+      n_estimators: { type: int, low: 200, high: 1000 }
+      max_depth: { type: int, low: 4, high: 30 }
+      min_samples_split: { type: int, low: 2, high: 30 }
+      min_samples_leaf: { type: int, low: 1, high: 15 }
+      max_features: { type: float, low: 0.3, high: 1.0 }
+    fixed_params:
+      n_jobs: -1
+
 # ---------------------------------------------------------------------------
-# Optional screening-only models (not tuned with Optuna)
+# All screening models (stage 1 - ranked by val RMSE, top N sent to HPO)
 # ---------------------------------------------------------------------------
 screening_models:
-  # Include HPO models here too if you want them to be screened.
   - name: lightgbm
     enabled: true
     fixed_params:
@@ -134,7 +136,34 @@ screening_models:
       max_features: 0.7
       n_jobs: -1
 
+  - name: extra_trees
+    enabled: true
+    fixed_params:
+      n_estimators: 120
+      max_depth: 12
+      n_jobs: -1
+
+  - name: gradient_boosting
+    enabled: true
+    fixed_params:
+      n_estimators: 100
+      max_depth: 5
+
+  - name: hist_gradient_boosting
+    enabled: true
+    fixed_params:
+      max_iter: 200
+      max_depth: 8
+
   - name: ridge
+    enabled: true
+    fixed_params: {}
+
+  - name: lasso
+    enabled: true
+    fixed_params: {}
+
+  - name: elasticnet
     enabled: true
     fixed_params: {}
 
@@ -142,3 +171,8 @@ screening_models:
     enabled: true
     fixed_params:
       max_depth: 10
+
+  - name: adaboost
+    enabled: true
+    fixed_params:
+      n_estimators: 100

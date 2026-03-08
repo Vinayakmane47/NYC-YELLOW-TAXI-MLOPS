@@ -9,81 +9,68 @@ Each DAG run shares a single PIPELINE_RUN_ID so all stage metadata is
 written to the same folder: src/metadata/pipeline_<RUN_ID>/
 """
 
-import os
-import sys
 from datetime import datetime, timedelta
 
-from airflow import DAG
 from airflow.operators.python import PythonOperator
+from dag_utils import set_pipeline_run_id
 
-# Add project root to Python path for imports
-sys.path.insert(0, '/opt/airflow/src')
-sys.path.insert(0, '/opt/airflow')
-
-# Import pipeline entry points
+from airflow import DAG
 from src.data_ingestion import main as data_ingestion_main
-from src.data_validation import main as data_validation_main
 from src.data_preprocessing import main as data_preprocessing_main
 from src.data_transformation import main as data_transformation_main
+from src.data_validation import main as data_validation_main
 from src.ml_transformed import main as ml_transformation_main
-from src.model_training import main as model_training_main
 from src.model_evaluation import main as model_evaluation_main
 from src.model_registry import main as model_registry_main
-
-
-def _set_pipeline_run_id(**context):
-    """Inject a shared PIPELINE_RUN_ID from the Airflow execution date."""
-    run_id = context["ds_nodash"]  # e.g. "20260212"
-    os.environ["PIPELINE_RUN_ID"] = run_id
-    print(f"PIPELINE_RUN_ID set to {run_id}")
+from src.model_training import main as model_training_main
 
 
 def run_data_ingestion(**context):
     """Download raw NYC taxi data (Bronze layer)."""
-    _set_pipeline_run_id(**context)
+    set_pipeline_run_id(**context)
     data_ingestion_main()
 
 
 
 def run_data_validation(**context):
     """Validate ingested data schema."""
-    _set_pipeline_run_id(**context)
+    set_pipeline_run_id(**context)
     data_validation_main()
 
 
 def run_data_preprocessing(**context):
     """Clean and filter data (Silver layer)."""
-    _set_pipeline_run_id(**context)
+    set_pipeline_run_id(**context)
     data_preprocessing_main()
 
 
 def run_data_transformation(**context):
     """Feature engineering (Gold layer)."""
-    _set_pipeline_run_id(**context)
+    set_pipeline_run_id(**context)
     data_transformation_main()
 
 
 def run_ml_transformation(**context):
     """Prepare ML-ready train/val/test splits."""
-    _set_pipeline_run_id(**context)
+    set_pipeline_run_id(**context)
     ml_transformation_main()
 
 
 def run_model_training(**context):
     """Train champion model from champion.json."""
-    _set_pipeline_run_id(**context)
+    set_pipeline_run_id(**context)
     model_training_main()
 
 
 def run_model_evaluation(**context):
     """Evaluate new model against registered Production model."""
-    _set_pipeline_run_id(**context)
+    set_pipeline_run_id(**context)
     model_evaluation_main()
 
 
 def run_model_registry(**context):
     """Register and promote model in MLflow Model Registry."""
-    _set_pipeline_run_id(**context)
+    set_pipeline_run_id(**context)
     model_registry_main()
 
 

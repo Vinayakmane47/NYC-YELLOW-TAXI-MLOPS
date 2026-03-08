@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+      - run: pip install ruff
+      - name: Check formatting
+        run: ruff format --check src/ tests/ airflow/dags/
+      - name: Check linting
+        run: ruff check src/ tests/ airflow/dags/
+
+  test:
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.9"
+      - name: Install Java (required for PySpark)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y openjdk-17-jre-headless
+      - name: Install dependencies
+        run: pip install -e ".[test]"
+      - name: Run tests
+        run: pytest tests/ -v --tb=short
+
+  docker-build:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Airflow Docker image
+        run: docker build -f Dockerfile.airflow -t nyc-taxi-airflow:ci .

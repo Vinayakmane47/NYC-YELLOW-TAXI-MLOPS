@@ -13,7 +13,6 @@ from typing import Any, Dict, List, Optional
 import yaml
 from pydantic import BaseModel, Field
 
-
 # ---------------------------------------------------------------------------
 # Sub-configs
 # ---------------------------------------------------------------------------
@@ -64,32 +63,48 @@ class TrainingConfig(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class MinioBucketsConfig(BaseModel):
+    bronze: str = "bronze"
+    silver: str = "silver"
+    gold: str = "gold"
+    ml_transformed: str = "ml-transformed"
+    model_config = {"extra": "forbid"}
+
+
+class MinioConfig(BaseModel):
+    endpoint: str = "http://localhost:9000"
+    access_key: str = "minioadmin"
+    secret_key: str = "minioadmin"
+    buckets: MinioBucketsConfig = Field(default_factory=MinioBucketsConfig)
+    model_config = {"extra": "forbid"}
+
+
 class IngestionConfig(BaseModel):
     year: int = 2025
-    input_dir: str = "data"
+    input_dir: str = "s3a://bronze"
     model_config = {"extra": "forbid"}
 
 
 class ValidationConfig(BaseModel):
-    input_dir: str = "data"
+    input_dir: str = "s3a://bronze"
     model_config = {"extra": "forbid"}
 
 
 class PreprocessingConfig(BaseModel):
-    input_dir: str = "data"
-    output_dir: str = "silver"
+    input_dir: str = "s3a://bronze"
+    output_dir: str = "s3a://silver"
     model_config = {"extra": "forbid"}
 
 
 class TransformationConfig(BaseModel):
-    input_dir: str = "silver"
-    output_dir: str = "gold"
+    input_dir: str = "s3a://silver"
+    output_dir: str = "s3a://gold"
     model_config = {"extra": "forbid"}
 
 
 class MlTransformConfig(BaseModel):
-    input_dir: str = "gold"
-    output_dir: str = "ml_transformed"
+    input_dir: str = "s3a://gold"
+    output_dir: str = "s3a://ml-transformed"
     max_rows: int = 1_000_000
     model_config = {"extra": "forbid"}
 
@@ -145,6 +160,7 @@ class PipelineConfig(BaseModel):
     tracking: TrackingConfig
     data: DataConfig
     training: TrainingConfig
+    minio: MinioConfig = Field(default_factory=MinioConfig)
     ingestion: IngestionConfig = Field(default_factory=IngestionConfig)
     validation: ValidationConfig = Field(default_factory=ValidationConfig)
     preprocessing: PreprocessingConfig = Field(default_factory=PreprocessingConfig)

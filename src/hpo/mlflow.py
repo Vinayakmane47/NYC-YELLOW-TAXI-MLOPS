@@ -1,12 +1,10 @@
 import hashlib
 import json
-import os
 import sys
 import time
 import traceback
 import warnings
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Type
@@ -24,6 +22,7 @@ from sklearn.ensemble import (
 )
 from sklearn.linear_model import ElasticNet, Lasso, Ridge
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
+from sklearn.model_selection import cross_val_score
 from sklearn.tree import DecisionTreeRegressor
 
 # Ensure project root is importable when run as `python src/hpo/mlflow.py`.
@@ -31,13 +30,13 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from src.hpo.config_schema import MlflowPipelineConfig
-from src.utils.spark_utils import SparkUtils
-
-
 import mlflow
 import mlflow.sklearn
 
+from src.hpo.config_schema import MlflowPipelineConfig
+from src.utils.mlflow_auth import setup_mlflow
+from src.utils.quality_gate import QualityGate, QualityGateResult
+from src.utils.spark_utils import SparkUtils
 
 DEFAULT_CONFIG_PATH = "src/hpo/config_mlflow.yaml"
 
@@ -118,6 +117,19 @@ class LightGBMStrategy(ModelStrategy):
     def build_model(self, params: Dict[str, Any]) -> LGBMRegressor:
         return LGBMRegressor(**params)
 
+    def fit_with_early_stopping(
+        self, model: LGBMRegressor, x_train, y_train, x_val, y_val, n_rounds: int = 50
+    ) -> LGBMRegressor:
+        """Fit LightGBM with early stopping on validation set."""
+        from lightgbm import early_stopping, log_evaluation
+
+        model.fit(
+            x_train, y_train,
+            eval_set=[(x_val, y_val)],
+            callbacks=[early_stopping(n_rounds, verbose=False), log_evaluation(0)],
+        )
+        return model
+
 
 @register_model("random_forest")
 class RandomForestStrategy(ModelStrategy):
@@ -176,55 +188,6 @@ class DecisionTreeStrategy(ModelStrategy):
 
 
 # ---------------------------------------------------------------------------
-# Quality Gate
-# ---------------------------------------------------------------------------
-
-
-@dataclass
-class QualityGateResult:
-    """Outcome of running the champion model through metric thresholds."""
-
-    passed: bool
-    violations: List[str]
-    metrics_checked: Dict[str, float]
-    thresholds_used: Dict[str, float]
-
-
-class QualityGate:
-    """MLOps quality gate that validates model metrics against thresholds.
-
-    Default thresholds (r2>=0, rmse/mae<=999999) are intentionally permissive
-    so the gate is opt-in: tighten values in settings.yaml when ready.
-    """
-
-    def __init__(self, min_r2: float, max_rmse: float, max_mae: float) -> None:
-        self.min_r2 = min_r2
-        self.max_rmse = max_rmse
-        self.max_mae = max_mae
-
-    def evaluate(self, metrics: Dict[str, float]) -> QualityGateResult:
-        violations: List[str] = []
-
-        if metrics["r2"] < self.min_r2:
-            violations.append(f"R2 {metrics['r2']:.4f} < min_r2 threshold {self.min_r2}")
-        if metrics["rmse"] > self.max_rmse:
-            violations.append(f"RMSE {metrics['rmse']:.4f} > max_rmse threshold {self.max_rmse}")
-        if metrics["mae"] > self.max_mae:
-            violations.append(f"MAE {metrics['mae']:.4f} > max_mae threshold {self.max_mae}")
-
-        return QualityGateResult(
-            passed=len(violations) == 0,
-            violations=violations,
-            metrics_checked=metrics,
-            thresholds_used={
-                "min_r2": self.min_r2,
-                "max_rmse": self.max_rmse,
-                "max_mae": self.max_mae,
-            },
-        )
-
-
-# ---------------------------------------------------------------------------
 # Orchestrator
 # ---------------------------------------------------------------------------
 
@@ -260,6 +223,7 @@ class HyperparameterTuner:
         self.sample_fraction: Optional[float] = self.config.data.sample_fraction
 
         self.n_trials_per_model: int = self.config.training.n_trials_per_model
+        self.cv_folds: int = self.config.training.cv_folds
         self.random_state: int = self.config.training.random_state
         self.champion_config_path = Path(self.config.training.champion_config_path)
         self.min_r2: float = self.config.training.metric_thresholds.min_r2
@@ -308,38 +272,13 @@ class HyperparameterTuner:
 
     # -- MLflow setup --------------------------------------------------------
 
-    def _load_env_token(self) -> str:
-        token = os.getenv(self.dagshub_token_env_key)
-        if token:
-            return token.strip()
-
-        env_path = Path(self.env_path)
-        if not env_path.exists():
-            raise ValueError(
-                f"Missing token and {env_path} not found. "
-                f"Set {self.dagshub_token_env_key} in env or .env."
-            )
-
-        for line in env_path.read_text(encoding="utf-8").splitlines():
-            stripped = line.strip()
-            if not stripped or stripped.startswith("#") or "=" not in stripped:
-                continue
-            key, value = stripped.split("=", 1)
-            if key.strip() == self.dagshub_token_env_key:
-                token = value.strip().strip('"').strip("'")
-                if token:
-                    return token
-                break
-
-        raise ValueError(
-            f"{self.dagshub_token_env_key} is missing/empty in {env_path}."
-        )
-
     def _setup_mlflow(self) -> None:
-        token = self._load_env_token()
-        os.environ["MLFLOW_TRACKING_USERNAME"] = self.dagshub_username
-        os.environ["MLFLOW_TRACKING_PASSWORD"] = token
-        mlflow.set_tracking_uri(self.tracking_uri)
+        setup_mlflow(
+            tracking_uri=self.tracking_uri,
+            username=self.dagshub_username,
+            token_env_key=self.dagshub_token_env_key,
+            env_file_paths=[self.env_path],
+        )
 
     def _safe_mlflow_call(
         self,
@@ -472,7 +411,14 @@ class HyperparameterTuner:
             start_ts = time.time()
             params = strategy.default_params()
             model = strategy.build_model(params)
-            model.fit(x_train, y_train)
+
+            # Use early stopping for LightGBM in screening
+            if name == "lightgbm" and isinstance(strategy, LightGBMStrategy):
+                strategy.fit_with_early_stopping(
+                    model, x_train, y_train, x_val, y_val, n_rounds=50,
+                )
+            else:
+                model.fit(x_train, y_train)
             metrics = self._metric_dict(y_val, model.predict(x_val))
             elapsed = time.time() - start_ts
             print(
@@ -513,42 +459,82 @@ class HyperparameterTuner:
         y_val: pd.Series,
     ) -> Dict[str, Any]:
         strategy = self.hpo_strategies[family]
-        print(f"[hpo] starting family={family} trials={self.n_trials_per_model}")
+        cv_folds = self.cv_folds
+        print(
+            f"[hpo] starting family={family} trials={self.n_trials_per_model} "
+            f"cv_folds={cv_folds}"
+        )
+
+        # Combine train+val for cross-validation
+        x_cv = pd.concat([x_train, x_val], ignore_index=True)
+        y_cv = pd.concat([y_train, y_val], ignore_index=True)
 
         def objective(trial: optuna.Trial) -> float:
             params = strategy.suggest_params(trial)
             model = strategy.build_model(params)
-            model.fit(x_train, y_train)
-            metrics = self._metric_dict(y_val, model.predict(x_val))
-            trial.set_user_attr("metrics", metrics)
+
+            # K-fold CV for robust metric estimation
+            scores = cross_val_score(
+                model, x_cv, y_cv,
+                cv=cv_folds,
+                scoring="neg_root_mean_squared_error",
+                n_jobs=1,  # model already parallelizes internally
+            )
+            rmse = float(-scores.mean())
+            rmse_std = float(scores.std())
+
+            # Pruner integration
+            trial.report(rmse, step=0)
+            if trial.should_prune():
+                raise optuna.TrialPruned()
+
+            trial.set_user_attr("metrics", {"rmse": rmse, "rmse_std": rmse_std})
 
             with mlflow.start_run(run_name=f"{family}_trial_{trial.number}", nested=True):
                 self._safe_mlflow_call(mlflow.log_params, params)
                 self._safe_mlflow_call(
                     mlflow.log_metrics,
-                    {f"val_{k}": v for k, v in metrics.items()},
+                    {"cv_rmse": rmse, "cv_rmse_std": rmse_std},
                 )
                 self._safe_mlflow_call(mlflow.set_tag, "model_family", family)
                 self._safe_mlflow_call(mlflow.set_tag, "trial_number", str(trial.number))
                 self._safe_mlflow_call(mlflow.set_tag, "stage", "hpo_trial")
+                self._safe_mlflow_call(mlflow.set_tag, "cv_folds", str(cv_folds))
 
-            return metrics["rmse"]
+            return rmse
 
-        study = optuna.create_study(direction="minimize", study_name=f"{family}_study")
-        study.optimize(objective, n_trials=self.n_trials_per_model, show_progress_bar=False)
+        # Optuna study with MedianPruner
+        pruner = optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=0)
+        study = optuna.create_study(
+            direction="minimize", study_name=f"{family}_study", pruner=pruner,
+        )
+        study.optimize(
+            objective, n_trials=self.n_trials_per_model, show_progress_bar=False,
+        )
 
+        # Refit best model on full train data, evaluate on held-out val
         best_params = {**study.best_trial.params}
         best_params.update(strategy.fixed_params)
         best_params["random_state"] = self.random_state
 
         best_model = strategy.build_model(best_params)
-        best_model.fit(x_train, y_train)
+
+        # Use early stopping for LightGBM on final refit
+        if family == "lightgbm" and isinstance(strategy, LightGBMStrategy):
+            strategy.fit_with_early_stopping(
+                best_model, x_train, y_train, x_val, y_val, n_rounds=50,
+            )
+        else:
+            best_model.fit(x_train, y_train)
+
         best_metrics = self._metric_dict(y_val, best_model.predict(x_val))
 
         with mlflow.start_run(run_name=f"{family}_best", nested=True):
             self._safe_mlflow_call(mlflow.set_tag, "model_family", family)
             self._safe_mlflow_call(mlflow.set_tag, "stage", "hpo_family_best")
             self._safe_mlflow_call(mlflow.log_param, "n_trials", self.n_trials_per_model)
+            self._safe_mlflow_call(mlflow.log_param, "cv_folds", cv_folds)
+            self._safe_mlflow_call(mlflow.log_param, "pruned_trials", len(study.get_trials(states=[optuna.trial.TrialState.PRUNED])))
             self._safe_mlflow_call(mlflow.log_params, best_params)
             self._safe_mlflow_call(
                 mlflow.log_metrics,
@@ -556,12 +542,28 @@ class HyperparameterTuner:
                     "val_rmse": best_metrics["rmse"],
                     "val_mae": best_metrics["mae"],
                     "val_r2": best_metrics["r2"],
+                    "best_cv_rmse": float(study.best_value),
                 },
             )
 
+            # Log feature importance for the best model
+            if hasattr(best_model, "feature_importances_"):
+                importance = sorted(
+                    zip(x_train.columns, best_model.feature_importances_),
+                    key=lambda x: x[1], reverse=True,
+                )
+                for i, (feat, imp) in enumerate(importance[:20]):
+                    self._safe_mlflow_call(
+                        mlflow.log_metric,
+                        f"feat_imp_{i:02d}_{feat[:40]}",
+                        float(imp),
+                    )
+
         print(
-            f"[hpo] finished family={family} best_rmse={best_metrics['rmse']:.4f} "
-            f"best_mae={best_metrics['mae']:.4f} best_r2={best_metrics['r2']:.4f}"
+            f"[hpo] finished family={family} best_cv_rmse={study.best_value:.4f} "
+            f"val_rmse={best_metrics['rmse']:.4f} "
+            f"val_mae={best_metrics['mae']:.4f} val_r2={best_metrics['r2']:.4f} "
+            f"pruned={len(study.get_trials(states=[optuna.trial.TrialState.PRUNED]))}"
         )
 
         return {
@@ -571,6 +573,7 @@ class HyperparameterTuner:
             "val_metrics": best_metrics,
             "model": best_model,
             "n_trials": self.n_trials_per_model,
+            "cv_folds": cv_folds,
         }
 
     # -- Filesystem ----------------------------------------------------------

@@ -1,11 +1,10 @@
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import List
 
-from utils.spark_utils import (
+from src.utils.io_utils import list_parquet_files
+from src.utils.spark_utils import (
     SparkUtils,
     build_stage_metadata,
-    collect_file_sizes,
     get_pipeline_run_id,
     write_stage_metadata,
 )
@@ -33,26 +32,21 @@ class DataValidation:
 
     def __init__(
         self,
-        input_dir: str = "data",
+        input_dir: str = "s3a://bronze",
         app_name: str = "nyc-taxi-data-validation",
     ) -> None:
-        self.input_dir = Path(input_dir)
+        self.input_dir = input_dir
         self.spark = SparkUtils(app_name=app_name).spark
-
-    def _list_input_files(self) -> List[Path]:
-        if not self.input_dir.exists():
-            return []
-        return sorted([path for path in self.input_dir.rglob("trip_*.parquet") if path.is_file()])
 
     def run(self) -> None:
         run_start = datetime.now(timezone.utc)
         pipeline_run_id = get_pipeline_run_id()
-        files = self._list_input_files()
+        files = list_parquet_files(self.input_dir)
 
         status = "success"
         error = None
         missing_columns: List[str] = []
-        sample_file = str(files[0]) if files else ""
+        sample_file = files[0] if files else ""
         row_count_sample = 0
 
         try:
@@ -88,9 +82,8 @@ class DataValidation:
                     "duration_seconds": (run_end - run_start).total_seconds(),
                 },
                 artifacts={
-                    "input_root_dir": str(self.input_dir),
+                    "input_root_dir": self.input_dir,
                     "sample_file": sample_file,
-                    **collect_file_sizes(files),
                 },
                 status=status,
                 error=error,
@@ -103,8 +96,11 @@ class DataValidation:
             print(f"[data_validation] metadata saved to {metadata_path}")
 
     def close(self) -> None:
-        if self.spark:
-            self.spark.stop()
+        try:
+            if self.spark:
+                self.spark.stop()
+        except Exception:
+            pass
 
 
 def main() -> None:

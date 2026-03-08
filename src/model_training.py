@@ -10,36 +10,28 @@ Usage::
     python -m src.model_training
 """
 
-import importlib
 import json
-import sys
 import time
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Tuple
 
 import joblib
-import numpy as np
+import mlflow.pyfunc
+import mlflow.sklearn
 import pandas as pd
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-
-# Ensure project root is importable.
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
 
 from src.config.config import ChampionConfig, PipelineConfig
 from src.models.model_factory import build_model
 from src.utils.base_pipeline import BasePipeline, mlflow
+from src.utils.metrics import compute_regression_metrics
+from src.utils.mlflow_pyfunc import SklearnJoblibPyfuncModel
 from src.utils.spark_utils import (
     SparkUtils,
     build_stage_metadata,
     get_pipeline_metadata_dir,
     write_stage_metadata,
 )
-
-importlib.import_module("mlflow.sklearn")
-
 
 # ---------------------------------------------------------------------------
 # Result dataclass
@@ -155,15 +147,6 @@ class ModelTrainingPipeline(BasePipeline):
         target = self.config.data.target_col
         return df.drop(columns=[target]), df[target]
 
-    # -- Metrics -------------------------------------------------------------
-
-    def _compute_metrics(self, y_true: pd.Series, y_pred: np.ndarray) -> Dict[str, float]:
-        return {
-            "rmse": float(np.sqrt(mean_squared_error(y_true, y_pred))),
-            "mae": float(mean_absolute_error(y_true, y_pred)),
-            "r2": float(r2_score(y_true, y_pred)),
-        }
-
     # -- Model building ------------------------------------------------------
 
     def _build_model(self) -> Any:
@@ -178,6 +161,11 @@ class ModelTrainingPipeline(BasePipeline):
 
     def _metadata_path(self) -> Path:
         return Path("src/metadata") / f"pipeline_{self.pipeline_run_id}" / "model_training.json"
+
+    def _model_artifact_paths(self) -> Path:
+        metadata_dir = get_pipeline_metadata_dir(self.pipeline_run_id)
+        joblib_path = (metadata_dir / f"{self.champion.model_family}.joblib").resolve()
+        return joblib_path
 
     # -- Main pipeline -------------------------------------------------------
 
@@ -203,7 +191,7 @@ class ModelTrainingPipeline(BasePipeline):
         mlflow.set_experiment(self.experiment_name)
 
         with mlflow.start_run(
-            run_name=f"training_{self.timestamp}",
+            run_name=f"training_{self.pipeline_run_id}",
             tags={"mlflow.parentRunId": parent_run_id},
         ) as run:
             mlflow.set_tag("project", "NYC-YELLOW-TAXI-MLOPS")
@@ -230,7 +218,7 @@ class ModelTrainingPipeline(BasePipeline):
 
             # Val metrics
             val_pred = model.predict(x_val)
-            val_metrics = self._compute_metrics(y_val, val_pred)
+            val_metrics = compute_regression_metrics(y_val, val_pred)
             print(
                 f"[training] val metrics: "
                 f"rmse={val_metrics['rmse']:.4f} "
@@ -243,17 +231,43 @@ class ModelTrainingPipeline(BasePipeline):
                 "val_r2": val_metrics["r2"],
             })
 
+            # Log feature importance
+            if hasattr(model, "feature_importances_"):
+                importance = sorted(
+                    zip(x_train.columns, model.feature_importances_),
+                    key=lambda item: item[1], reverse=True,
+                )
+                for i, (feat, imp) in enumerate(importance[:20]):
+                    mlflow.log_metric(f"feat_imp_{i:02d}_{feat[:40]}", float(imp))
+                imp_path = get_pipeline_metadata_dir(self.pipeline_run_id) / "feature_importance.json"
+                with imp_path.open("w", encoding="utf-8") as f:
+                    json.dump(importance, f, indent=2)
+                mlflow.log_artifact(str(imp_path))
+                print(f"[training] top 5 features: {[f[0] for f in importance[:5]]}")
+            elif hasattr(model, "coef_"):
+                importance = sorted(
+                    zip(x_train.columns, [abs(c) for c in model.coef_]),
+                    key=lambda item: item[1], reverse=True,
+                )
+                for i, (feat, imp) in enumerate(importance[:20]):
+                    mlflow.log_metric(f"feat_imp_{i:02d}_{feat[:40]}", float(imp))
+                print(f"[training] top 5 features (coef): {[f[0] for f in importance[:5]]}")
+
             # Save model artifact
-            model_path = (
-                Path(self.config.training.models_dir)
-                / f"{self.champion.model_family}_{self.timestamp}.joblib"
-            )
-            joblib.dump(model, model_path)
+            model_path = self._model_artifact_paths()
+            joblib.dump(model, model_path, compress=3)
             print(f"[training] model saved to {model_path}")
 
-            # Log model to MLflow
-            mlflow.sklearn.log_model(model, name="trained_model")
-            mlflow.log_artifact(str(model_path))
+            # Upload a lightweight MLflow pyfunc wrapper that references the
+            # compressed joblib artifact. This keeps the remote artifact small
+            # enough for DagShub while preserving a registry-compatible runs:/ URI.
+            mlflow.pyfunc.log_model(
+                artifact_path="trained_model",
+                python_model=SklearnJoblibPyfuncModel(),
+                artifacts={"model_file": str(model_path)},
+            )
+            registered_model_source = f"runs:/{run.info.run_id}/trained_model"
+            print(f"[training] remote MLflow model logged at {registered_model_source}")
 
             # Save training metadata
             meta_path = self._metadata_path()
@@ -285,6 +299,7 @@ class ModelTrainingPipeline(BasePipeline):
                 },
                 artifacts={
                     "model_path": result.model_path,
+                    "registered_model_source": registered_model_source,
                 },
                 status="success",
                 error=None,
@@ -303,8 +318,11 @@ class ModelTrainingPipeline(BasePipeline):
 
     def close(self) -> None:
         """Stop Spark session."""
-        if self.spark:
-            self.spark.stop()
+        try:
+            if self.spark:
+                self.spark.stop()
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------

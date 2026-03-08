@@ -36,6 +36,7 @@ class MetricThresholds(BaseModel):
 
 class TrainingConfig(BaseModel):
     n_trials_per_model: int = 25
+    cv_folds: int = 3
     random_state: int = 42
     champion_config_path: str = "src/hpo/champion.json"
     metric_thresholds: MetricThresholds = Field(default_factory=MetricThresholds)

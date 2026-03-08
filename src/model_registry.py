@@ -12,15 +12,11 @@ Usage::
 
 import importlib
 import json
-import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-# Ensure project root is importable.
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
+from mlflow.exceptions import MlflowException
 
 from src.config.config import ChampionConfig, PipelineConfig
 from src.utils.base_pipeline import BasePipeline, mlflow
@@ -90,6 +86,10 @@ class ModelRegistryPipeline(BasePipeline):
 
     def _find_training_run_id(self) -> str:
         """Find the training run ID from training_metadata.json."""
+        data = self._load_training_metadata()
+        return data["run_id"]
+
+    def _load_training_metadata(self) -> Dict[str, Any]:
         meta_path = (
             Path("src/metadata")
             / f"pipeline_{self.pipeline_run_id}"
@@ -101,8 +101,32 @@ class ModelRegistryPipeline(BasePipeline):
                 "Run model_training first."
             )
         with meta_path.open("r", encoding="utf-8") as f:
-            data = json.load(f)
-        return data["run_id"]
+            return json.load(f)
+
+    def _find_training_model_source(self, training_meta: Dict[str, Any], training_run_id: str) -> str:
+        artifacts = training_meta.get("artifacts", {})
+        registered_model_source = artifacts.get("registered_model_source", "")
+        if registered_model_source:
+            return registered_model_source
+        local_mlflow_model_path = artifacts.get("mlflow_model_path", "")
+        if local_mlflow_model_path:
+            model_path = Path(local_mlflow_model_path)
+            if model_path.exists():
+                return str(model_path.resolve())
+            raise FileNotFoundError(
+                f"MLflow-format model directory not found at {model_path}. "
+                "Run model_training first."
+            )
+        return f"runs:/{training_run_id}/trained_model"
+
+    def _is_local_model_source(self, model_source: str) -> bool:
+        return not (
+            model_source.startswith("runs:/")
+            or model_source.startswith("models:/")
+            or model_source.startswith("s3://")
+            or model_source.startswith("s3a://")
+            or "://" in model_source
+        )
 
     # -- Registry operations -------------------------------------------------
 
@@ -201,20 +225,43 @@ class ModelRegistryPipeline(BasePipeline):
             return result
 
         # 2. Find the training run to register from
-        training_run_id = self._find_training_run_id()
-        model_uri = f"runs:/{training_run_id}/trained_model"
-        print(f"[registry] registering model from {model_uri}")
+        training_meta = self._load_training_metadata()
+        training_run_id = training_meta["run_id"]
+        model_source = self._find_training_model_source(training_meta, training_run_id)
+        print(f"[registry] registering model from {model_source}")
 
         # 3. Get current production version (for archiving later)
         previous_version = self._get_current_production_version()
         existing_version = self._find_existing_version_for_run(training_run_id)
+
+        if existing_version is None and self._is_local_model_source(model_source):
+            reason = (
+                "Evaluation approved the model, but automatic MLflow registration was skipped "
+                f"because the model artifact only exists as a local path: {model_source}. "
+                "Remote registry backends like DagShub cannot create model versions from "
+                "container-local filesystem paths. Upload the model to a shared artifact store "
+                "(for example S3 or the MLflow artifact store) and register it manually."
+            )
+            print(f"[registry] skipping automatic registration: {reason}")
+            result = RegistryResult(
+                registered=False,
+                model_name=self.REGISTERED_MODEL_NAME,
+                version=None,
+                stage="ManualRegistrationRequired",
+                previous_version=previous_version,
+                run_id="",
+                timestamp_utc=self.timestamp,
+                reason=reason,
+            )
+            self._save_metadata(result)
+            return result
 
         # 4. Register model
         parent_run_id = self._get_or_create_parent_run()
         mlflow.set_experiment(self.experiment_name)
 
         with mlflow.start_run(
-            run_name=f"registry_{self.timestamp}",
+            run_name=f"registry_{self.pipeline_run_id}",
             tags={"mlflow.parentRunId": parent_run_id},
         ) as run:
             mlflow.set_tag("project", "NYC-YELLOW-TAXI-MLOPS")
@@ -236,11 +283,11 @@ class ModelRegistryPipeline(BasePipeline):
                 # the logged_model API used by mlflow.register_model in 3.x.
                 try:
                     self.client.create_registered_model(self.REGISTERED_MODEL_NAME)
-                except Exception:
-                    pass  # already exists
+                except MlflowException:
+                    pass  # model already registered
                 model_version = self.client.create_model_version(
                     name=self.REGISTERED_MODEL_NAME,
-                    source=model_uri,
+                    source=model_source,
                     run_id=training_run_id,
                 )
                 version_num = int(model_version.version)
