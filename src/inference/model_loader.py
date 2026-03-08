@@ -1,7 +1,6 @@
 """Model loader for inference - downloads and caches model from MLflow registry."""
 
 import json
-import os
 from pathlib import Path
 from typing import Any, Dict, Optional
 

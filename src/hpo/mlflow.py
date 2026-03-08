@@ -9,34 +9,33 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Type
 
-import numpy as np
-import optuna
-import pandas as pd
-from lightgbm import LGBMRegressor
-from sklearn.ensemble import (
+# Ensure project root is importable when run as `python src/hpo/mlflow.py`.
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+import mlflow  # noqa: E402
+import mlflow.sklearn  # noqa: E402
+import numpy as np  # noqa: E402
+import optuna  # noqa: E402
+import pandas as pd  # noqa: E402
+from lightgbm import LGBMRegressor  # noqa: E402
+from sklearn.ensemble import (  # noqa: E402
     AdaBoostRegressor,
     ExtraTreesRegressor,
     GradientBoostingRegressor,
     HistGradientBoostingRegressor,
     RandomForestRegressor,
 )
-from sklearn.linear_model import ElasticNet, Lasso, Ridge
-from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-from sklearn.model_selection import cross_val_score
-from sklearn.tree import DecisionTreeRegressor
+from sklearn.linear_model import ElasticNet, Lasso, Ridge  # noqa: E402
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score  # noqa: E402
+from sklearn.model_selection import cross_val_score  # noqa: E402
+from sklearn.tree import DecisionTreeRegressor  # noqa: E402
 
-# Ensure project root is importable when run as `python src/hpo/mlflow.py`.
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-if str(PROJECT_ROOT) not in sys.path:
-    sys.path.insert(0, str(PROJECT_ROOT))
-
-import mlflow
-import mlflow.sklearn
-
-from src.hpo.config_schema import MlflowPipelineConfig
-from src.utils.mlflow_auth import setup_mlflow
-from src.utils.quality_gate import QualityGate, QualityGateResult
-from src.utils.spark_utils import SparkUtils
+from src.hpo.config_schema import MlflowPipelineConfig  # noqa: E402
+from src.utils.mlflow_auth import setup_mlflow  # noqa: E402
+from src.utils.quality_gate import QualityGate  # noqa: E402
+from src.utils.spark_utils import SparkUtils  # noqa: E402
 
 DEFAULT_CONFIG_PATH = "src/hpo/config_mlflow.yaml"
 
