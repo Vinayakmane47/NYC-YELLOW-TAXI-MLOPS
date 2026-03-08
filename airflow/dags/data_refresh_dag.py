@@ -59,14 +59,14 @@ def run_retrain_decider(**context):
     set_pipeline_run_id(**context)
     result = drift_detection_main()
     should_retrain = not result.drift_gate_passed
-    context['ti'].xcom_push(key='should_retrain', value=should_retrain)
-    context['ti'].xcom_push(key='pipeline_run_id', value=os.environ['PIPELINE_RUN_ID'])
+    context["ti"].xcom_push(key="should_retrain", value=should_retrain)
+    context["ti"].xcom_push(key="pipeline_run_id", value=os.environ["PIPELINE_RUN_ID"])
     print(f"[retrain_decider] drift_gate_passed={result.drift_gate_passed}, should_retrain={should_retrain}")
 
 
 def check_should_retrain(**context):
     """ShortCircuit: only proceed if retrain_decider says yes."""
-    return context['ti'].xcom_pull(key='should_retrain', task_ids='retrain_decider')
+    return context["ti"].xcom_pull(key="should_retrain", task_ids="retrain_decider")
 
 
 # ---------------------------------------------------------------------------
@@ -74,55 +74,55 @@ def check_should_retrain(**context):
 # ---------------------------------------------------------------------------
 
 default_args = {
-    'owner': 'data-engineer',
-    'depends_on_past': False,
-    'start_date': datetime(2025, 1, 1),
-    'email_on_failure': False,
-    'email_on_retry': False,
-    'retries': 2,
-    'retry_delay': timedelta(minutes=5),
-    'execution_timeout': timedelta(hours=2),
+    "owner": "data-engineer",
+    "depends_on_past": False,
+    "start_date": datetime(2025, 1, 1),
+    "email_on_failure": False,
+    "email_on_retry": False,
+    "retries": 2,
+    "retry_delay": timedelta(minutes=5),
+    "execution_timeout": timedelta(hours=2),
 }
 
 dag = DAG(
-    'nyc_data_refresh_dag',
+    "nyc_data_refresh_dag",
     default_args=default_args,
-    description='Monthly data refresh: ETL + drift detection + conditional retrain trigger',
-    schedule_interval='@monthly',
+    description="Monthly data refresh: ETL + drift detection + conditional retrain trigger",
+    schedule_interval="@monthly",
     start_date=datetime(2025, 1, 1),
     catchup=False,
     max_active_runs=1,
-    tags=['nyc-taxi', 'etl', 'data-refresh', 'drift', 'production'],
+    tags=["nyc-taxi", "etl", "data-refresh", "drift", "production"],
 )
 
 # -- Data stages -----------------------------------------------------------
 
 ingestion_task = PythonOperator(
-    task_id='data_ingestion',
+    task_id="data_ingestion",
     python_callable=run_data_ingestion,
     dag=dag,
 )
 
 validation_task = PythonOperator(
-    task_id='data_validation',
+    task_id="data_validation",
     python_callable=run_data_validation,
     dag=dag,
 )
 
 preprocessing_task = PythonOperator(
-    task_id='data_preprocessing',
+    task_id="data_preprocessing",
     python_callable=run_data_preprocessing,
     dag=dag,
 )
 
 transformation_task = PythonOperator(
-    task_id='data_transformation',
+    task_id="data_transformation",
     python_callable=run_data_transformation,
     dag=dag,
 )
 
 ml_transformation_task = PythonOperator(
-    task_id='ml_transformation',
+    task_id="ml_transformation",
     python_callable=run_ml_transformation,
     dag=dag,
 )
@@ -130,22 +130,22 @@ ml_transformation_task = PythonOperator(
 # -- Drift detection + conditional trigger ---------------------------------
 
 retrain_decider_task = PythonOperator(
-    task_id='retrain_decider',
+    task_id="retrain_decider",
     python_callable=run_retrain_decider,
     dag=dag,
 )
 
 should_retrain_task = ShortCircuitOperator(
-    task_id='check_should_retrain',
+    task_id="check_should_retrain",
     python_callable=check_should_retrain,
     dag=dag,
 )
 
 trigger_retrain_task = TriggerDagRunOperator(
-    task_id='trigger_retrain',
-    trigger_dag_id='nyc_model_retrain_dag',
+    task_id="trigger_retrain",
+    trigger_dag_id="nyc_model_retrain_dag",
     conf={
-        'pipeline_run_id': '{{ ti.xcom_pull(key="pipeline_run_id", task_ids="retrain_decider") }}',
+        "pipeline_run_id": '{{ ti.xcom_pull(key="pipeline_run_id", task_ids="retrain_decider") }}',
     },
     dag=dag,
 )

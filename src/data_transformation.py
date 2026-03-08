@@ -61,21 +61,11 @@ class DataTransformation:
             )
             .withColumn(
                 "sin_day_of_week",
-                F.sin(
-                    F.lit(2.0)
-                    * F.lit(math.pi)
-                    * F.col("pickup_day_of_week")
-                    / F.lit(7.0)
-                ),
+                F.sin(F.lit(2.0) * F.lit(math.pi) * F.col("pickup_day_of_week") / F.lit(7.0)),
             )
             .withColumn(
                 "cos_day_of_week",
-                F.cos(
-                    F.lit(2.0)
-                    * F.lit(math.pi)
-                    * F.col("pickup_day_of_week")
-                    / F.lit(7.0)
-                ),
+                F.cos(F.lit(2.0) * F.lit(math.pi) * F.col("pickup_day_of_week") / F.lit(7.0)),
             )
         )
 
@@ -95,14 +85,8 @@ class DataTransformation:
             F.concat_ws("_", F.col("PULocationID").cast("string"), F.col("DOLocationID").cast("string")),
         ).withColumn("is_same_zone", F.col("PULocationID") == F.col("DOLocationID"))
 
-        pickup_counts = (
-            df.groupBy("PULocationID")
-            .agg(F.count("*").alias("pickup_zone_trip_count"))
-        )
-        dropoff_counts = (
-            df.groupBy("DOLocationID")
-            .agg(F.count("*").alias("dropoff_zone_trip_count"))
-        )
+        pickup_counts = df.groupBy("PULocationID").agg(F.count("*").alias("pickup_zone_trip_count"))
+        dropoff_counts = df.groupBy("DOLocationID").agg(F.count("*").alias("dropoff_zone_trip_count"))
         route_counts = df.groupBy("route_id").agg(F.count("*").alias("route_trip_count"))
 
         df = (
@@ -113,9 +97,7 @@ class DataTransformation:
 
         df = df.withColumn(
             "fare_per_mile",
-            F.when(F.col("trip_distance") > 0, F.col("fare_amount") / F.col("trip_distance")).otherwise(
-                F.lit(None)
-            ),
+            F.when(F.col("trip_distance") > 0, F.col("fare_amount") / F.col("trip_distance")).otherwise(F.lit(None)),
         )
 
         surcharge_total = (
@@ -127,16 +109,12 @@ class DataTransformation:
 
         df = df.withColumn(
             "surcharge_ratio",
-            F.when(F.col("total_amount") != 0, surcharge_total / F.col("total_amount")).otherwise(
-                F.lit(None)
-            ),
+            F.when(F.col("total_amount") != 0, surcharge_total / F.col("total_amount")).otherwise(F.lit(None)),
         )
 
         df = df.withColumn(
             "toll_ratio",
-            F.when(F.col("total_amount") != 0, F.col("tolls_amount") / F.col("total_amount")).otherwise(
-                F.lit(None)
-            ),
+            F.when(F.col("total_amount") != 0, F.col("tolls_amount") / F.col("total_amount")).otherwise(F.lit(None)),
         )
 
         df = (

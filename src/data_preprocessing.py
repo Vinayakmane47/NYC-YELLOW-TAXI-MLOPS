@@ -29,8 +29,7 @@ class DataPreprocessing:
         base = (
             df.withColumn(
                 "trip_duration_min",
-                (F.unix_timestamp("tpep_dropoff_datetime") - F.unix_timestamp("tpep_pickup_datetime"))
-                / 60.0,
+                (F.unix_timestamp("tpep_dropoff_datetime") - F.unix_timestamp("tpep_pickup_datetime")) / 60.0,
             )
             .filter(F.col("trip_duration_min").isNotNull())
             .filter((F.col("trip_duration_min") > 0) & (F.col("trip_duration_min") < 180))
@@ -75,9 +74,7 @@ class DataPreprocessing:
 
         base = base.withColumn(
             "RatecodeID",
-            F.when(F.col("RatecodeID") < 1, 1)
-            .when(F.col("RatecodeID") > 6, 6)
-            .otherwise(F.col("RatecodeID")),
+            F.when(F.col("RatecodeID") < 1, 1).when(F.col("RatecodeID") > 6, 6).otherwise(F.col("RatecodeID")),
         )
 
         base = base.filter(F.col("fare_amount") > 0).filter(F.col("fare_amount") < 500)

@@ -71,16 +71,9 @@ class ModelRegistryPipeline(BasePipeline):
 
     def _load_evaluation_metadata(self) -> Dict[str, Any]:
         """Load evaluation_metadata.json from the pipeline experiments dir."""
-        meta_path = (
-            Path("src/metadata")
-            / f"pipeline_{self.pipeline_run_id}"
-            / "model_evaluation.json"
-        )
+        meta_path = Path("src/metadata") / f"pipeline_{self.pipeline_run_id}" / "model_evaluation.json"
         if not meta_path.exists():
-            raise FileNotFoundError(
-                f"Evaluation metadata not found at {meta_path}. "
-                "Run model_evaluation first."
-            )
+            raise FileNotFoundError(f"Evaluation metadata not found at {meta_path}. Run model_evaluation first.")
         with meta_path.open("r", encoding="utf-8") as f:
             return json.load(f)
 
@@ -90,16 +83,9 @@ class ModelRegistryPipeline(BasePipeline):
         return data["run_id"]
 
     def _load_training_metadata(self) -> Dict[str, Any]:
-        meta_path = (
-            Path("src/metadata")
-            / f"pipeline_{self.pipeline_run_id}"
-            / "model_training.json"
-        )
+        meta_path = Path("src/metadata") / f"pipeline_{self.pipeline_run_id}" / "model_training.json"
         if not meta_path.exists():
-            raise FileNotFoundError(
-                f"Training metadata not found at {meta_path}. "
-                "Run model_training first."
-            )
+            raise FileNotFoundError(f"Training metadata not found at {meta_path}. Run model_training first.")
         with meta_path.open("r", encoding="utf-8") as f:
             return json.load(f)
 
@@ -114,8 +100,7 @@ class ModelRegistryPipeline(BasePipeline):
             if model_path.exists():
                 return str(model_path.resolve())
             raise FileNotFoundError(
-                f"MLflow-format model directory not found at {model_path}. "
-                "Run model_training first."
+                f"MLflow-format model directory not found at {model_path}. Run model_training first."
             )
         return f"runs:/{training_run_id}/trained_model"
 
@@ -133,9 +118,7 @@ class ModelRegistryPipeline(BasePipeline):
     def _get_current_production_version(self) -> Optional[int]:
         """Get the current Production version number, if any."""
         try:
-            versions = self.client.get_latest_versions(
-                self.REGISTERED_MODEL_NAME, stages=["Production"]
-            )
+            versions = self.client.get_latest_versions(self.REGISTERED_MODEL_NAME, stages=["Production"])
             if versions:
                 return int(versions[0].version)
         except Exception:
@@ -307,10 +290,7 @@ class ModelRegistryPipeline(BasePipeline):
                 if previous_version is not None and previous_version != version_num:
                     self._archive_old_production(previous_version)
             else:
-                print(
-                    f"[registry] quality gate failed, "
-                    f"version {version_num} stays in Staging"
-                )
+                print(f"[registry] quality gate failed, version {version_num} stays in Staging")
 
             # Log registry info
             mlflow.log_param("registered_model_name", self.REGISTERED_MODEL_NAME)

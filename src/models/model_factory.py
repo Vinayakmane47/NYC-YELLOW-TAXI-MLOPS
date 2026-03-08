@@ -26,7 +26,5 @@ def build_model(model_family: str, params: Dict[str, Any]) -> Any:
         "decision_tree": lambda p: DecisionTreeRegressor(**p),
     }
     if model_family not in builders:
-        raise ValueError(
-            f"Unknown model family '{model_family}'. Available: {sorted(builders.keys())}"
-        )
+        raise ValueError(f"Unknown model family '{model_family}'. Available: {sorted(builders.keys())}")
     return builders[model_family](params)

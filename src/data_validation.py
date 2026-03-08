@@ -57,10 +57,7 @@ class DataValidation:
             row_count_sample = sample_df.count()
             missing_columns = [c for c in self.REQUIRED_COLUMNS if c not in sample_df.columns]
             if missing_columns:
-                raise ValueError(
-                    "Missing required columns in ingested data: "
-                    + ", ".join(missing_columns)
-                )
+                raise ValueError("Missing required columns in ingested data: " + ", ".join(missing_columns))
         except Exception as exc:  # noqa: BLE001
             status = "failed"
             error = str(exc)

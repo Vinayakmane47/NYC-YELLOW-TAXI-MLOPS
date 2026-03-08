@@ -31,7 +31,6 @@ def run_data_ingestion(**context):
     data_ingestion_main()
 
 
-
 def run_data_validation(**context):
     """Validate ingested data schema."""
     set_pipeline_run_id(**context)
@@ -79,55 +78,55 @@ def run_model_registry(**context):
 # ---------------------------------------------------------------------------
 
 default_args = {
-    'owner': 'data-engineer',
-    'depends_on_past': False,
-    'start_date': datetime(2025, 1, 1),
-    'email_on_failure': False,
-    'email_on_retry': False,
-    'retries': 2,
-    'retry_delay': timedelta(minutes=5),
-    'execution_timeout': timedelta(hours=2),
+    "owner": "data-engineer",
+    "depends_on_past": False,
+    "start_date": datetime(2025, 1, 1),
+    "email_on_failure": False,
+    "email_on_retry": False,
+    "retries": 2,
+    "retry_delay": timedelta(minutes=5),
+    "execution_timeout": timedelta(hours=2),
 }
 
 dag = DAG(
-    'nyc_taxi_mlops_pipeline',
+    "nyc_taxi_mlops_pipeline",
     default_args=default_args,
-    description='Complete MLOps pipeline: data ETL + model training/evaluation/registry',
-    schedule_interval='@monthly',
+    description="Complete MLOps pipeline: data ETL + model training/evaluation/registry",
+    schedule_interval="@monthly",
     start_date=datetime(2025, 1, 1),
     catchup=False,
     max_active_runs=1,
-    tags=['nyc-taxi', 'etl', 'ml', 'production', 'mlops'],
+    tags=["nyc-taxi", "etl", "ml", "production", "mlops"],
 )
 
 # -- Data stages -----------------------------------------------------------
 
 ingestion_task = PythonOperator(
-    task_id='data_ingestion',
+    task_id="data_ingestion",
     python_callable=run_data_ingestion,
     dag=dag,
 )
 
 validation_task = PythonOperator(
-    task_id='data_validation',
+    task_id="data_validation",
     python_callable=run_data_validation,
     dag=dag,
 )
 
 preprocessing_task = PythonOperator(
-    task_id='data_preprocessing',
+    task_id="data_preprocessing",
     python_callable=run_data_preprocessing,
     dag=dag,
 )
 
 transformation_task = PythonOperator(
-    task_id='data_transformation',
+    task_id="data_transformation",
     python_callable=run_data_transformation,
     dag=dag,
 )
 
 ml_transformation_task = PythonOperator(
-    task_id='ml_transformation',
+    task_id="ml_transformation",
     python_callable=run_ml_transformation,
     dag=dag,
 )
@@ -135,19 +134,19 @@ ml_transformation_task = PythonOperator(
 # -- ML stages -------------------------------------------------------------
 
 training_task = PythonOperator(
-    task_id='model_training',
+    task_id="model_training",
     python_callable=run_model_training,
     dag=dag,
 )
 
 evaluation_task = PythonOperator(
-    task_id='model_evaluation',
+    task_id="model_evaluation",
     python_callable=run_model_evaluation,
     dag=dag,
 )
 
 registry_task = PythonOperator(
-    task_id='model_registry',
+    task_id="model_registry",
     python_callable=run_model_registry,
     dag=dag,
 )

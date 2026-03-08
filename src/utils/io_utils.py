@@ -79,9 +79,7 @@ def write_single_parquet(
 
     temp_dir = Path(tempfile.mkdtemp(dir=str(local_path.parent)))
     try:
-        df.coalesce(1).write.mode("overwrite").option("compression", compression).parquet(
-            str(temp_dir)
-        )
+        df.coalesce(1).write.mode("overwrite").option("compression", compression).parquet(str(temp_dir))
         part_files = list(temp_dir.glob("part-*.parquet"))
         if not part_files:
             raise RuntimeError(f"No parquet part file found in {temp_dir}")

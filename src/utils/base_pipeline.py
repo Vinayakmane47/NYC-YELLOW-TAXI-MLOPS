@@ -49,11 +49,7 @@ class BasePipeline:
     # -- Parent run management -----------------------------------------------
 
     def _parent_run_path(self) -> Path:
-        return (
-            Path("src/metadata")
-            / f"pipeline_{self.pipeline_run_id}"
-            / "parent_run.json"
-        )
+        return Path("src/metadata") / f"pipeline_{self.pipeline_run_id}" / "parent_run.json"
 
     def _save_parent_run_id(self, parent_run_id: str) -> None:
         """Save the parent MLflow run ID so subsequent stages can nest under it."""

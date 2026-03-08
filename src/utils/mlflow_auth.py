@@ -42,9 +42,7 @@ def load_env_token(
                 if token:
                     return token
 
-    raise ValueError(
-        f"{token_env_key} not found. Set it as an environment variable or in .env file."
-    )
+    raise ValueError(f"{token_env_key} not found. Set it as an environment variable or in .env file.")
 
 
 def setup_mlflow(

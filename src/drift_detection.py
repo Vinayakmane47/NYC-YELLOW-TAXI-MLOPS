@@ -101,9 +101,7 @@ class DriftDetectionPipeline(BasePipeline):
 
     # -- Evidently report ----------------------------------------------------
 
-    def _run_drift_report(
-        self, reference: pd.DataFrame, current: pd.DataFrame
-    ) -> "Report":
+    def _run_drift_report(self, reference: pd.DataFrame, current: pd.DataFrame) -> "Report":
         """Run Evidently DataDriftPreset on reference vs current."""
         report = Report([DataDriftPreset()])
         snapshot = report.run(reference_data=reference, current_data=current)
@@ -161,11 +159,7 @@ class DriftDetectionPipeline(BasePipeline):
     # -- Filesystem ----------------------------------------------------------
 
     def _metadata_path(self) -> Path:
-        return (
-            Path("src/metadata")
-            / f"pipeline_{self.pipeline_run_id}"
-            / "drift_detection.json"
-        )
+        return Path("src/metadata") / f"pipeline_{self.pipeline_run_id}" / "drift_detection.json"
 
     # -- Main pipeline -------------------------------------------------------
 
@@ -181,10 +175,7 @@ class DriftDetectionPipeline(BasePipeline):
         snapshot = self._run_drift_report(reference, current)
         metrics = self._extract_metrics(snapshot)
 
-        print(
-            f"[drift] drifted {metrics['n_drifted']}/{metrics['n_columns']} columns "
-            f"({metrics['share_drifted']:.1%})"
-        )
+        print(f"[drift] drifted {metrics['n_drifted']}/{metrics['n_columns']} columns ({metrics['share_drifted']:.1%})")
         if metrics["drifted_columns"]:
             print(f"[drift] drifted columns: {metrics['drifted_columns'][:10]}")
         if metrics["target_pvalue"] is not None:
@@ -193,10 +184,12 @@ class DriftDetectionPipeline(BasePipeline):
         # 3. Evaluate drift gate
         drift_cfg = self.config.drift
         gate = DriftGate(drift_cfg.max_share_drifted, drift_cfg.target_drift_pvalue)
-        gate_result = gate.evaluate({
-            "share_drifted": metrics["share_drifted"],
-            "target_pvalue": metrics["target_pvalue"],
-        })
+        gate_result = gate.evaluate(
+            {
+                "share_drifted": metrics["share_drifted"],
+                "target_pvalue": metrics["target_pvalue"],
+            }
+        )
         print(f"[drift] drift gate passed (no significant drift): {gate_result.passed}")
         if not gate_result.passed:
             for v in gate_result.violations:

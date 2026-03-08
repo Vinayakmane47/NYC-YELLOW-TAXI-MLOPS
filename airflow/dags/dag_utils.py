@@ -10,11 +10,7 @@ def set_pipeline_run_id(**context) -> str:
     from dag_run.conf if available.
     """
     conf = context.get("dag_run")
-    run_id = (
-        conf.conf.get("pipeline_run_id", context["ds_nodash"])
-        if conf and conf.conf
-        else context["ds_nodash"]
-    )
+    run_id = conf.conf.get("pipeline_run_id", context["ds_nodash"]) if conf and conf.conf else context["ds_nodash"]
     os.environ["PIPELINE_RUN_ID"] = run_id
     print(f"PIPELINE_RUN_ID set to {run_id}")
     return run_id

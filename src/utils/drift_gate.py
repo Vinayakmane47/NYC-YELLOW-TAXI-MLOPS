@@ -20,17 +20,11 @@ class DriftGate:
 
         share = drift_metrics["share_drifted"]
         if share > self.max_share_drifted:
-            violations.append(
-                f"share_of_drifted_columns {share:.2%} > "
-                f"threshold {self.max_share_drifted:.2%}"
-            )
+            violations.append(f"share_of_drifted_columns {share:.2%} > threshold {self.max_share_drifted:.2%}")
 
         target_pval = drift_metrics.get("target_pvalue")
         if target_pval is not None and target_pval < self.target_drift_pvalue:
-            violations.append(
-                f"target_drift p-value {target_pval:.4f} < "
-                f"threshold {self.target_drift_pvalue}"
-            )
+            violations.append(f"target_drift p-value {target_pval:.4f} < threshold {self.target_drift_pvalue}")
 
         return DriftGateResult(
             passed=len(violations) == 0,

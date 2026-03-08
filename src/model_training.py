@@ -127,9 +127,7 @@ class ModelTrainingPipeline(BasePipeline):
         expected = list(self.champion.feature_list)
         missing = [col for col in expected if col not in x_train.columns]
         if missing:
-            raise ValueError(
-                f"Champion feature_list has missing columns in training data: {missing[:10]}"
-            )
+            raise ValueError(f"Champion feature_list has missing columns in training data: {missing[:10]}")
 
         x_train_aligned = x_train[expected]
         x_val_aligned = x_val[expected]
@@ -225,17 +223,20 @@ class ModelTrainingPipeline(BasePipeline):
                 f"mae={val_metrics['mae']:.4f} "
                 f"r2={val_metrics['r2']:.4f}"
             )
-            mlflow.log_metrics({
-                "val_rmse": val_metrics["rmse"],
-                "val_mae": val_metrics["mae"],
-                "val_r2": val_metrics["r2"],
-            })
+            mlflow.log_metrics(
+                {
+                    "val_rmse": val_metrics["rmse"],
+                    "val_mae": val_metrics["mae"],
+                    "val_r2": val_metrics["r2"],
+                }
+            )
 
             # Log feature importance
             if hasattr(model, "feature_importances_"):
                 importance = sorted(
                     zip(x_train.columns, model.feature_importances_),
-                    key=lambda item: item[1], reverse=True,
+                    key=lambda item: item[1],
+                    reverse=True,
                 )
                 for i, (feat, imp) in enumerate(importance[:20]):
                     mlflow.log_metric(f"feat_imp_{i:02d}_{feat[:40]}", float(imp))
@@ -247,7 +248,8 @@ class ModelTrainingPipeline(BasePipeline):
             elif hasattr(model, "coef_"):
                 importance = sorted(
                     zip(x_train.columns, [abs(c) for c in model.coef_]),
-                    key=lambda item: item[1], reverse=True,
+                    key=lambda item: item[1],
+                    reverse=True,
                 )
                 for i, (feat, imp) in enumerate(importance[:20]):
                     mlflow.log_metric(f"feat_imp_{i:02d}_{feat[:40]}", float(imp))

@@ -85,9 +85,7 @@ class ModelStrategy(ABC):
         for param_name, spec in self.search_space.items():
             param_type = spec.get("type")
             if param_type == "int":
-                params[param_name] = trial.suggest_int(
-                    param_name, int(spec["low"]), int(spec["high"])
-                )
+                params[param_name] = trial.suggest_int(param_name, int(spec["low"]), int(spec["high"]))
             elif param_type == "float":
                 params[param_name] = trial.suggest_float(
                     param_name,
@@ -112,6 +110,7 @@ class ModelStrategy(ABC):
 
 # -- HPO-eligible models (have search_space in YAML) ------------------------
 
+
 @register_model("lightgbm")
 class LightGBMStrategy(ModelStrategy):
     def build_model(self, params: Dict[str, Any]) -> LGBMRegressor:
@@ -124,7 +123,8 @@ class LightGBMStrategy(ModelStrategy):
         from lightgbm import early_stopping, log_evaluation
 
         model.fit(
-            x_train, y_train,
+            x_train,
+            y_train,
             eval_set=[(x_val, y_val)],
             callbacks=[early_stopping(n_rounds, verbose=False), log_evaluation(0)],
         )
@@ -144,6 +144,7 @@ class ExtraTreesStrategy(ModelStrategy):
 
 
 # -- Screening-only models (default params, no HPO) -------------------------
+
 
 @register_model("ridge")
 class RidgeStrategy(ModelStrategy):
@@ -241,14 +242,11 @@ class HyperparameterTuner:
             raise ValueError(f"No enabled HPO models found in {config_path}")
         if not screening_model_configs:
             raise ValueError(
-                f"No enabled screening models found in {config_path}. "
-                "Add models under 'screening_models'."
+                f"No enabled screening models found in {config_path}. Add models under 'screening_models'."
             )
 
         self.hpo_strategies: Dict[str, ModelStrategy] = self._build_strategies(hpo_model_configs)
-        self.screening_strategies: Dict[str, ModelStrategy] = self._build_strategies(
-            screening_model_configs
-        )
+        self.screening_strategies: Dict[str, ModelStrategy] = self._build_strategies(screening_model_configs)
 
         self.pipeline_timestamp = datetime.now(timezone.utc).strftime("%H%M%d%m%Y")
         self.experiment_name = f"run_{self.pipeline_timestamp}"
@@ -263,10 +261,7 @@ class HyperparameterTuner:
         for model_cfg in models_config:
             name = model_cfg["name"]
             if name not in MODEL_REGISTRY:
-                raise ValueError(
-                    f"Unknown model '{name}'. "
-                    f"Registered models: {list(MODEL_REGISTRY.keys())}"
-                )
+                raise ValueError(f"Unknown model '{name}'. Registered models: {list(MODEL_REGISTRY.keys())}")
             strategies[name] = MODEL_REGISTRY[name](model_cfg, self.random_state)
         return strategies
 
@@ -338,9 +333,7 @@ class HyperparameterTuner:
         sdf = self.spark.read.parquet(path)
 
         if self.target_col not in sdf.columns:
-            raise ValueError(
-                f"Target column '{self.target_col}' is missing in {split_name} dataset: {path}"
-            )
+            raise ValueError(f"Target column '{self.target_col}' is missing in {split_name} dataset: {path}")
 
         feature_cols = [c for c in sdf.columns if c != self.target_col]
         selected_cols = feature_cols + [self.target_col]
@@ -353,22 +346,13 @@ class HyperparameterTuner:
             sdf = sdf.limit(max_rows)
 
         pdf = sdf.toPandas()
-        print(
-            f"[load_data] {split_name}: loaded {len(pdf):,} rows, "
-            f"{len(pdf.columns):,} columns (Spark -> pandas)"
-        )
+        print(f"[load_data] {split_name}: loaded {len(pdf):,} rows, {len(pdf.columns):,} columns (Spark -> pandas)")
         return pdf
 
     def load_data(self) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-        train_df = self._load_split_with_spark(
-            self.train_path, split_name="train", max_rows=self.max_rows_train
-        )
-        val_df = self._load_split_with_spark(
-            self.val_path, split_name="val", max_rows=self.max_rows_val
-        )
-        test_df = self._load_split_with_spark(
-            self.test_path, split_name="test", max_rows=self.max_rows_test
-        )
+        train_df = self._load_split_with_spark(self.train_path, split_name="train", max_rows=self.max_rows_train)
+        val_df = self._load_split_with_spark(self.val_path, split_name="val", max_rows=self.max_rows_val)
+        test_df = self._load_split_with_spark(self.test_path, split_name="test", max_rows=self.max_rows_test)
         return train_df, val_df, test_df
 
     def prepare_xy(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series]:
@@ -387,10 +371,7 @@ class HyperparameterTuner:
         return {"rmse": rmse, "mae": mae, "r2": r2}
 
     def _schema_hash(self, df: pd.DataFrame) -> str:
-        schema_payload = [
-            {"name": col, "dtype": str(df[col].dtype)}
-            for col in df.columns
-        ]
+        schema_payload = [{"name": col, "dtype": str(df[col].dtype)} for col in df.columns]
         raw = json.dumps(schema_payload, sort_keys=True).encode("utf-8")
         return hashlib.sha256(raw).hexdigest()
 
@@ -415,7 +396,12 @@ class HyperparameterTuner:
             # Use early stopping for LightGBM in screening
             if name == "lightgbm" and isinstance(strategy, LightGBMStrategy):
                 strategy.fit_with_early_stopping(
-                    model, x_train, y_train, x_val, y_val, n_rounds=50,
+                    model,
+                    x_train,
+                    y_train,
+                    x_val,
+                    y_val,
+                    n_rounds=50,
                 )
             else:
                 model.fit(x_train, y_train)
@@ -435,15 +421,15 @@ class HyperparameterTuner:
                 )
                 self._safe_mlflow_call(mlflow.set_tag, "model_family", name)
                 self._safe_mlflow_call(mlflow.set_tag, "stage", "screening")
-                self._safe_mlflow_call(
-                    mlflow.set_tag, "hpo_eligible", str(name in self.hpo_strategies)
-                )
+                self._safe_mlflow_call(mlflow.set_tag, "hpo_eligible", str(name in self.hpo_strategies))
 
-            results.append({
-                "model_family": name,
-                "val_metrics": metrics,
-                "hpo_eligible": name in self.hpo_strategies,
-            })
+            results.append(
+                {
+                    "model_family": name,
+                    "val_metrics": metrics,
+                    "hpo_eligible": name in self.hpo_strategies,
+                }
+            )
 
         results.sort(key=lambda r: r["val_metrics"]["rmse"])
         return results
@@ -460,10 +446,7 @@ class HyperparameterTuner:
     ) -> Dict[str, Any]:
         strategy = self.hpo_strategies[family]
         cv_folds = self.cv_folds
-        print(
-            f"[hpo] starting family={family} trials={self.n_trials_per_model} "
-            f"cv_folds={cv_folds}"
-        )
+        print(f"[hpo] starting family={family} trials={self.n_trials_per_model} cv_folds={cv_folds}")
 
         # Combine train+val for cross-validation
         x_cv = pd.concat([x_train, x_val], ignore_index=True)
@@ -475,7 +458,9 @@ class HyperparameterTuner:
 
             # K-fold CV for robust metric estimation
             scores = cross_val_score(
-                model, x_cv, y_cv,
+                model,
+                x_cv,
+                y_cv,
                 cv=cv_folds,
                 scoring="neg_root_mean_squared_error",
                 n_jobs=1,  # model already parallelizes internally
@@ -506,10 +491,14 @@ class HyperparameterTuner:
         # Optuna study with MedianPruner
         pruner = optuna.pruners.MedianPruner(n_startup_trials=5, n_warmup_steps=0)
         study = optuna.create_study(
-            direction="minimize", study_name=f"{family}_study", pruner=pruner,
+            direction="minimize",
+            study_name=f"{family}_study",
+            pruner=pruner,
         )
         study.optimize(
-            objective, n_trials=self.n_trials_per_model, show_progress_bar=False,
+            objective,
+            n_trials=self.n_trials_per_model,
+            show_progress_bar=False,
         )
 
         # Refit best model on full train data, evaluate on held-out val
@@ -522,7 +511,12 @@ class HyperparameterTuner:
         # Use early stopping for LightGBM on final refit
         if family == "lightgbm" and isinstance(strategy, LightGBMStrategy):
             strategy.fit_with_early_stopping(
-                best_model, x_train, y_train, x_val, y_val, n_rounds=50,
+                best_model,
+                x_train,
+                y_train,
+                x_val,
+                y_val,
+                n_rounds=50,
             )
         else:
             best_model.fit(x_train, y_train)
@@ -534,7 +528,9 @@ class HyperparameterTuner:
             self._safe_mlflow_call(mlflow.set_tag, "stage", "hpo_family_best")
             self._safe_mlflow_call(mlflow.log_param, "n_trials", self.n_trials_per_model)
             self._safe_mlflow_call(mlflow.log_param, "cv_folds", cv_folds)
-            self._safe_mlflow_call(mlflow.log_param, "pruned_trials", len(study.get_trials(states=[optuna.trial.TrialState.PRUNED])))
+            self._safe_mlflow_call(
+                mlflow.log_param, "pruned_trials", len(study.get_trials(states=[optuna.trial.TrialState.PRUNED]))
+            )
             self._safe_mlflow_call(mlflow.log_params, best_params)
             self._safe_mlflow_call(
                 mlflow.log_metrics,
@@ -550,7 +546,8 @@ class HyperparameterTuner:
             if hasattr(best_model, "feature_importances_"):
                 importance = sorted(
                     zip(x_train.columns, best_model.feature_importances_),
-                    key=lambda x: x[1], reverse=True,
+                    key=lambda x: x[1],
+                    reverse=True,
                 )
                 for i, (feat, imp) in enumerate(importance[:20]):
                     self._safe_mlflow_call(
@@ -602,14 +599,8 @@ class HyperparameterTuner:
         y_train_screen = y_train.head(self.screening_row_cap_train)
         x_val_screen = x_val.head(self.screening_row_cap_val)
         y_val_screen = y_val.head(self.screening_row_cap_val)
-        print(
-            "[pipeline] screening row caps -> "
-            f"train={len(x_train_screen):,}, val={len(x_val_screen):,}"
-        )
-        print(
-            "[pipeline] full hpo data -> "
-            f"train={len(x_train):,}, val={len(x_val):,}, test={len(x_test):,}"
-        )
+        print(f"[pipeline] screening row caps -> train={len(x_train_screen):,}, val={len(x_val_screen):,}")
+        print(f"[pipeline] full hpo data -> train={len(x_train):,}, val={len(x_val):,}, test={len(x_test):,}")
 
         schema_hash = self._schema_hash(x_train)
         experiment_dir = self._build_experiment_dir()

@@ -81,19 +81,13 @@ class ModelLoader:
         # Find the Production version and its run_id
         versions = client.get_latest_versions(self.model_name, stages=[self.model_stage])
         if not versions:
-            raise RuntimeError(
-                f"No model version found in stage '{self.model_stage}' "
-                f"for '{self.model_name}'"
-            )
+            raise RuntimeError(f"No model version found in stage '{self.model_stage}' for '{self.model_name}'")
 
         version_info = versions[0]
         self._model_version = version_info.version
         run_id = version_info.run_id
 
-        print(
-            f"[model_loader] Found {self.model_name} v{self._model_version} "
-            f"(run_id={run_id}) in {self.model_stage}"
-        )
+        print(f"[model_loader] Found {self.model_name} v{self._model_version} (run_id={run_id}) in {self.model_stage}")
 
         # Find the joblib artifact inside trained_model/artifacts/
         artifacts = client.list_artifacts(run_id, "trained_model/artifacts")
@@ -104,9 +98,7 @@ class ModelLoader:
                 break
 
         if not joblib_artifact:
-            raise RuntimeError(
-                f"No .joblib artifact found in run {run_id} under trained_model/artifacts/"
-            )
+            raise RuntimeError(f"No .joblib artifact found in run {run_id} under trained_model/artifacts/")
 
         # Download the artifact to cache
         cache_path = self.cache_dir / f"{self.model_name}_v{self._model_version}.joblib"
@@ -115,9 +107,7 @@ class ModelLoader:
             print(f"[model_loader] Using cached artifact: {cache_path}")
         else:
             print(f"[model_loader] Downloading {joblib_artifact} ...")
-            download_dir = client.download_artifacts(
-                run_id, joblib_artifact, str(self.cache_dir)
-            )
+            download_dir = client.download_artifacts(run_id, joblib_artifact, str(self.cache_dir))
             # download_artifacts returns the local path of the downloaded file
             downloaded = Path(download_dir)
             if downloaded != cache_path:
@@ -127,10 +117,7 @@ class ModelLoader:
         self._model = joblib.load(cache_path)
         self._model_uri = f"models:/{self.model_name}/{self.model_stage} (v{self._model_version})"
         self._source = "mlflow_registry"
-        print(
-            f"[model_loader] Loaded {self.model_name} v{self._model_version} "
-            f"from {self.model_stage}"
-        )
+        print(f"[model_loader] Loaded {self.model_name} v{self._model_version} from {self.model_stage}")
 
     def _load_from_cache(self) -> None:
         """Load model from latest cached joblib file."""

@@ -123,24 +123,14 @@ class ModelEvaluationPipeline(BasePipeline):
 
     def _load_new_model(self) -> Any:
         """Load newly trained model path from training metadata."""
-        training_meta_path = (
-            Path("src/metadata")
-            / f"pipeline_{self.pipeline_run_id}"
-            / "model_training.json"
-        )
+        training_meta_path = Path("src/metadata") / f"pipeline_{self.pipeline_run_id}" / "model_training.json"
         if not training_meta_path.exists():
-            raise FileNotFoundError(
-                f"Training metadata not found at '{training_meta_path}'. "
-                "Run model_training first."
-            )
+            raise FileNotFoundError(f"Training metadata not found at '{training_meta_path}'. Run model_training first.")
         with training_meta_path.open("r", encoding="utf-8") as f:
             training_meta = json.load(f)
         model_path = training_meta.get("artifacts", {}).get("model_path", "")
         if not model_path or not Path(model_path).exists():
-            raise FileNotFoundError(
-                f"New model artifact not found at '{model_path}'. "
-                "Run model_training first."
-            )
+            raise FileNotFoundError(f"New model artifact not found at '{model_path}'. Run model_training first.")
         print(f"[evaluation] loading new model from {model_path}")
         return joblib.load(model_path)
 
@@ -207,24 +197,28 @@ class ModelEvaluationPipeline(BasePipeline):
                 improved = rmse_delta >= policy.min_rmse_improvement
             else:
                 improved = mae_delta >= -policy.max_mae_regression
-            comparisons.append(MetricComparison(
-                metric=metric,
-                new_value=new_val,
-                old_value=old_val,
-                improved=improved,
-                delta=old_val - new_val,
-            ))
+            comparisons.append(
+                MetricComparison(
+                    metric=metric,
+                    new_value=new_val,
+                    old_value=old_val,
+                    improved=improved,
+                    delta=old_val - new_val,
+                )
+            )
 
         # For R2: higher is better
         new_r2 = new_metrics["r2"]
         old_r2 = old_metrics["r2"]
-        comparisons.append(MetricComparison(
-            metric="r2",
-            new_value=new_r2,
-            old_value=old_r2,
-            improved=r2_delta >= -policy.max_r2_regression,
-            delta=r2_delta,
-        ))
+        comparisons.append(
+            MetricComparison(
+                metric="r2",
+                new_value=new_r2,
+                old_value=old_r2,
+                improved=r2_delta >= -policy.max_r2_regression,
+                delta=r2_delta,
+            )
+        )
 
         is_new_better = all(c.improved for c in comparisons)
 
@@ -326,26 +320,32 @@ class ModelEvaluationPipeline(BasePipeline):
             mlflow.set_tag("decision_reason", comparison.decision_reason)
 
             # New model metrics
-            mlflow.log_metrics({
-                "new_test_rmse": new_metrics["rmse"],
-                "new_test_mae": new_metrics["mae"],
-                "new_test_r2": new_metrics["r2"],
-            })
+            mlflow.log_metrics(
+                {
+                    "new_test_rmse": new_metrics["rmse"],
+                    "new_test_mae": new_metrics["mae"],
+                    "new_test_r2": new_metrics["r2"],
+                }
+            )
 
             # Old model metrics (if available)
             if old_metrics is not None:
-                mlflow.log_metrics({
-                    "registered_test_rmse": old_metrics["rmse"],
-                    "registered_test_mae": old_metrics["mae"],
-                    "registered_test_r2": old_metrics["r2"],
-                })
+                mlflow.log_metrics(
+                    {
+                        "registered_test_rmse": old_metrics["rmse"],
+                        "registered_test_mae": old_metrics["mae"],
+                        "registered_test_r2": old_metrics["r2"],
+                    }
+                )
 
                 # Deltas
-                mlflow.log_metrics({
-                    "delta_rmse": old_metrics["rmse"] - new_metrics["rmse"],
-                    "delta_mae": old_metrics["mae"] - new_metrics["mae"],
-                    "delta_r2": new_metrics["r2"] - old_metrics["r2"],
-                })
+                mlflow.log_metrics(
+                    {
+                        "delta_rmse": old_metrics["rmse"] - new_metrics["rmse"],
+                        "delta_mae": old_metrics["mae"] - new_metrics["mae"],
+                        "delta_r2": new_metrics["r2"] - old_metrics["r2"],
+                    }
+                )
 
             mlflow.log_param("test_rows", len(x_test))
             mlflow.log_param("champion_model_family", self.champion.model_family)

@@ -182,6 +182,7 @@ class PipelineConfig(BaseModel):
             raw = yaml.safe_load(f)
         return cls.model_validate(raw)
 
+
 # ---------------------------------------------------------------------------
 # Champion config (output of screening / HPO)
 # ---------------------------------------------------------------------------

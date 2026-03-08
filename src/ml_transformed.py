@@ -301,8 +301,7 @@ class MLDataTransformer:
                     "scaled": self.scale_cols,
                 },
                 "scaling_stats": {
-                    k: {"mean": float(v["mean"]), "stddev": float(v["stddev"])}
-                    for k, v in self.scaling_stats.items()
+                    k: {"mean": float(v["mean"]), "stddev": float(v["stddev"])} for k, v in self.scaling_stats.items()
                 },
                 "target_encoders": {
                     k: {"global_mean": float(v["global_mean"]), "num_categories": len(v["mapping"])}

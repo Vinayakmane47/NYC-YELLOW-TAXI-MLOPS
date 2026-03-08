@@ -46,43 +46,43 @@ def run_model_registry(**context):
 # ---------------------------------------------------------------------------
 
 default_args = {
-    'owner': 'ml-engineer',
-    'depends_on_past': False,
-    'start_date': datetime(2025, 1, 1),
-    'email_on_failure': False,
-    'email_on_retry': False,
-    'retries': 1,
-    'retry_delay': timedelta(minutes=5),
-    'execution_timeout': timedelta(hours=3),
+    "owner": "ml-engineer",
+    "depends_on_past": False,
+    "start_date": datetime(2025, 1, 1),
+    "email_on_failure": False,
+    "email_on_retry": False,
+    "retries": 1,
+    "retry_delay": timedelta(minutes=5),
+    "execution_timeout": timedelta(hours=3),
 }
 
 dag = DAG(
-    'nyc_model_retrain_dag',
+    "nyc_model_retrain_dag",
     default_args=default_args,
-    description='Conditional model retrain: training + evaluation + registry (triggered by drift)',
+    description="Conditional model retrain: training + evaluation + registry (triggered by drift)",
     schedule_interval=None,
     start_date=datetime(2025, 1, 1),
     catchup=False,
     max_active_runs=1,
-    tags=['nyc-taxi', 'ml', 'retrain', 'production'],
+    tags=["nyc-taxi", "ml", "retrain", "production"],
 )
 
 # -- ML stages -------------------------------------------------------------
 
 training_task = PythonOperator(
-    task_id='model_training',
+    task_id="model_training",
     python_callable=run_model_training,
     dag=dag,
 )
 
 evaluation_task = PythonOperator(
-    task_id='model_evaluation',
+    task_id="model_evaluation",
     python_callable=run_model_evaluation,
     dag=dag,
 )
 
 registry_task = PythonOperator(
-    task_id='model_registry',
+    task_id="model_registry",
     python_callable=run_model_registry,
     dag=dag,
 )

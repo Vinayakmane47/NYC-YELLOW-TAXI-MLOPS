@@ -178,9 +178,9 @@ class InferenceFeaturePipeline:
         df["dropoff_zone_trip_count"] = self.scaling_stats.get(
             "dropoff_zone_trip_count", DEFAULT_SCALING_STATS["dropoff_zone_trip_count"]
         )["mean"]
-        df["route_trip_count"] = self.scaling_stats.get(
-            "route_trip_count", DEFAULT_SCALING_STATS["route_trip_count"]
-        )["mean"]
+        df["route_trip_count"] = self.scaling_stats.get("route_trip_count", DEFAULT_SCALING_STATS["route_trip_count"])[
+            "mean"
+        ]
         return df
 
     def _add_boolean_features(self, df: pd.DataFrame) -> pd.DataFrame:
