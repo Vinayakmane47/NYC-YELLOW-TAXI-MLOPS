@@ -1,262 +1,216 @@
 # NYC Yellow Taxi MLOps Pipeline
 
-A complete MLOps pipeline for NYC Yellow Taxi trip data processing and analysis using PySpark and Apache Airflow.
+An end-to-end ML system that predicts NYC yellow taxi trip durations. Covers the full lifecycle: data ingestion, feature engineering, model training, experiment tracking, real-time inference, monitoring, and automated retraining when data changes.
+
+---
+
+## Architecture
+
+![MLOps Architecture](docs/diagrams/architecture.png)
+
+---
+
+## What It Does
+
+1. **Ingests** raw NYC taxi trip data monthly from the TLC website
+2. **Cleans and transforms** the data through Bronze → Silver → Gold layers stored in MinIO
+3. **Trains** a machine learning model using the best hyperparameters found via Optuna
+4. **Evaluates** the new model against the current production model — only promotes if it's better
+5. **Serves predictions** via a FastAPI inference API with a web UI
+6. **Monitors** prediction metrics and system health via Prometheus and Grafana
+7. **Detects drift** monthly and automatically triggers retraining if the data distribution has changed
+
+---
+
+## Services
+
+| Service | URL | Credentials |
+|---------|-----|-------------|
+| Airflow (pipeline UI) | http://localhost:8080 | airflow / airflow |
+| Inference API + Web UI | http://localhost:8000 | — |
+| Grafana (dashboards) | http://localhost:3000 | admin / admin |
+| Prometheus (metrics) | http://localhost:9090 | — |
+| Locust (load testing) | http://localhost:8089 | — |
+| MinIO (object storage) | http://localhost:9001 | minioadmin / minioadmin |
+
+---
+
+## Quick Start
+
+### Prerequisites
+
+- Docker and Docker Compose
+- A [DagShub](https://dagshub.com) account with an access token (for MLflow tracking)
+
+### 1. Clone and configure
+
+```bash
+git clone <repo-url>
+cd NYC-YELLOW-TAXI-MLOPS
+cp env.example .env
+```
+
+Edit `.env` and set your DagShub token:
+```
+DAGSHUB_TOKEN=your_token_here
+```
+
+### 2. Build and start
+
+```bash
+docker compose build
+docker compose up airflow-init   # first time only
+docker compose up -d
+```
+
+### 3. Run the data pipeline
+
+Open http://localhost:8080, enable and trigger the `nyc_taxi_mlops_pipeline` DAG.
+
+This runs the full pipeline: data ingestion → feature engineering → model training → model registry.
+
+### 4. Make a prediction
+
+```bash
+curl -X POST http://localhost:8000/predict \
+  -H "Content-Type: application/json" \
+  -d '{
+    "pickup_datetime": "2025-06-15T14:30:00",
+    "PULocationID": 161,
+    "DOLocationID": 237,
+    "trip_distance": 3.5
+  }'
+```
+
+Or open http://localhost:8000 for the web UI.
+
+---
+
+## Airflow DAGs
+
+| DAG | Schedule | What it does |
+|-----|----------|-------------|
+| `nyc_taxi_mlops_pipeline` | Monthly | Full pipeline: ETL + train + evaluate + register |
+| `nyc_data_refresh_dag` | Monthly | ETL + drift detection → triggers retraining only if drift found |
+| `nyc_model_retrain_dag` | On demand | Train + evaluate + register (triggered by drift DAG or manually) |
+
+---
+
+## Inference API
+
+The inference server loads the latest Production model from MLflow on startup and serves predictions.
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/` | GET | Web UI |
+| `/predict` | POST | Single trip prediction |
+| `/predict/batch` | POST | Batch predictions (up to 100) |
+| `/health` | GET | Health check |
+| `/model/reload` | POST | Reload model from registry |
+| `/metrics` | GET | Prometheus metrics |
+
+**Response:**
+```json
+{
+  "predicted_duration_minutes": 17.23,
+  "model_family": "random_forest",
+  "model_version": "v9"
+}
+```
+
+---
+
+## Hyperparameter Optimization
+
+HPO runs offline (not in the Airflow DAG) before the first training run:
+
+```bash
+python src/hpo/mlflow.py
+```
+
+This tests 10 model families, runs 50 Optuna trials on the top 2, and saves the best configuration to `src/hpo/champion.json`. The training DAG reads this file every time it runs.
+
+---
+
+## Monitoring
+
+While the inference API is running, open http://localhost:3000 to see the Grafana dashboard.
+
+Key panels:
+- Request rate and error rate
+- Prediction latency (p50, p95, p99)
+- Distribution of predicted trip durations
+- In-flight requests and batch sizes
+- CPU and memory usage
+
+### Load Testing
+
+```bash
+# Start Locust UI
+docker compose up inference-api locust
+
+# Open http://localhost:8089
+# Set number of users and start
+```
+
+---
 
 ## Project Structure
 
 ```
-.
+NYC-YELLOW-TAXI-MLOPS/
+├── airflow/dags/              # 3 Airflow DAGs
 ├── src/
-│   ├── data_ingestion.py       # Download raw taxi data
-│   ├── data_preprocessing.py    # Clean and preprocess data
-│   ├── data_transformation.py   # Feature engineering
-│   └── utils/
-│       └── spark_utils.py       # Spark utilities and metadata helpers
-├── airflow/
-│   ├── dags/                    # Airflow DAG definitions
-│   ├── logs/                    # Airflow logs (ignored by git)
-│   ├── plugins/                 # Airflow plugins
-│   └── config/                  # Airflow configuration
-├── data/                        # Raw data (Bronze layer)
-├── silver/                      # Cleaned data (Silver layer)
-├── gold/                        # Feature-engineered data (Gold layer)
-├── docker-compose.yml           # Docker services configuration
-├── Dockerfile.airflow           # Airflow + Spark client image
-├── Dockerfile.spark             # Standalone Spark worker image
-└── env.example                  # Environment variables template
+│   ├── config/                # Settings (settings.yaml)
+│   ├── hpo/                   # Hyperparameter optimization (Optuna)
+│   ├── inference/             # FastAPI server, feature pipeline, Locust
+│   ├── models/                # Model factory
+│   ├── utils/                 # Shared utilities
+│   ├── data_ingestion.py      # Bronze layer
+│   ├── data_preprocessing.py  # Silver layer
+│   ├── data_transformation.py # Gold layer
+│   ├── ml_transformed.py      # Train/val/test splits + encoding
+│   ├── model_training.py      # Train model
+│   ├── model_evaluation.py    # Compare vs production
+│   ├── model_registry.py      # Register and promote
+│   └── drift_detection.py     # Evidently drift detection
+├── monitoring/                # Prometheus config + Grafana dashboards
+├── docs/                      # Documentation and architecture diagram
+├── Dockerfile.airflow         # Airflow + Spark + ML libs image
+├── Dockerfile.inference       # Inference API image
+└── docker-compose.yml         # All services
 ```
 
-## Docker Architecture
-
-### Dockerfile.airflow
-Custom Airflow image with Spark client capabilities:
-- **Base**: Apache Airflow 2.8.2
-- **Purpose**: Orchestration and DAG execution
-- **Includes**: Java 17, Spark submit client, PySpark, AWS JARs
-- **Use case**: Running Airflow webserver, scheduler, and triggering Spark jobs
-
-### Dockerfile.spark
-Standalone Spark image for distributed processing:
-- **Base**: Python 3.9 slim
-- **Purpose**: Spark worker/master for distributed computing
-- **Includes**: Full Spark 3.4.1, Java 17, PySpark, data processing libraries
-- **Use case**: Standalone Spark cluster or local Spark jobs
-
-**Current Setup**: Using `Dockerfile.airflow` for all Airflow services with embedded Spark.
-
-## Data Pipeline Stages
-
-### 1. **Data Ingestion** (Bronze Layer)
-- Downloads NYC Yellow Taxi parquet files from official source
-- Stores raw data in `data/2025/<month>/trip_<month>.parquet`
-- Generates metadata JSON with download statistics
-
-### 2. **Data Preprocessing** (Silver Layer)
-- Cleans and validates data using PySpark
-- Applies filters and imputes missing values
-- Stores cleaned data in `silver/2025/<month>/trip_<month>.parquet`
-- Generates metadata JSON with data quality metrics
-
-### 3. **Data Transformation** (Gold Layer)
-- Feature engineering: time features, cyclical encoding, distance transforms
-- Creates aggregated features and ratios
-- Stores feature-engineered data in `gold/2025/<month>/trip_<month>.parquet`
-- Generates metadata JSON with feature statistics
-
-## Setup
-
-### Prerequisites
-- Python 3.11+
-- Docker and Docker Compose
-- uv (Python package manager)
-
-### 1. Install Python Dependencies
-
-```bash
-# Install dependencies using uv
-uv sync
-```
-
-### 2. Setup Airflow with Docker
-
-```bash
-# Create .env file from template
-cp env.example .env
-
-# Edit .env file to customize configuration (optional)
-nano .env
-
-# Build custom Airflow image from Dockerfile.airflow
-docker compose build
-
-# Initialize Airflow (first time only)
-docker compose up airflow-init
-
-# Start Airflow services
-docker compose up -d
-```
-
-**Note**: The custom Docker image includes:
-- **Java 17** (OpenJDK) for Spark execution
-- **Apache Spark 3.4.1** with Hadoop 3
-- **PySpark 3.4.1** matching Spark version
-- **NumPy, Pandas, PyArrow** for data processing
-- **AWS/S3 JARs** (hadoop-aws, aws-java-sdk-bundle) for MinIO/S3 connectivity
-- **DVC, Boto3, S3FS** for data versioning and cloud storage
-- **Pydantic, PyYAML** for configuration management
-- **Apache Airflow Spark Provider** for Spark job orchestration
-
-### 3. Access Airflow Web UI
-
-- **URL**: http://localhost:8080
-- **Username**: `airflow` (configurable in .env)
-- **Password**: `airflow` (configurable in .env)
-
-### 4. Access PostgreSQL
-
-- **Host**: `localhost`
-- **Port**: `5432`
-- **Database**: `airflow`
-- **Username**: `airflow`
-- **Password**: `airflow`
-
-## Running the Pipeline
-
-### Option 1: Run with Airflow (Recommended)
-
-1. Open Airflow UI at http://localhost:8080
-2. Enable the `nyc_taxi_etl_pipeline` DAG
-3. Trigger the DAG manually by clicking "Trigger DAG" button
-4. Monitor progress in Graph View or Tree View
-
-**Available DAGs:**
-- `nyc_taxi_etl_pipeline` - **Production ETL pipeline** (uses Python imports)
-- `nyc_taxi_pipeline_example` - Example pipeline (uses bash commands)
-
-### Option 2: Run Manually (Individual Stages)
-
-```bash
-# Activate virtual environment
-source .venv/bin/activate
-
-# Run data ingestion
-python src/data_ingestion.py
-
-# Run data preprocessing
-python src/data_preprocessing.py
-
-# Run data transformation
-python src/data_transformation.py
-```
-
-## Docker Commands
-
-```bash
-# Build custom image
-docker compose build
-
-# Start all services
-docker compose up -d
-
-# Stop all services
-docker compose down
-
-# View logs
-docker compose logs -f
-
-# Stop and remove volumes (clean slate)
-docker compose down -v
-
-# Restart a specific service
-docker compose restart airflow-scheduler
-
-# Rebuild and restart services
-docker compose up -d --build
-```
-
-## Configuration
-
-### Airflow Configuration
-
-Edit `.env` file to customize:
-- `AIRFLOW_UID`: User ID for Airflow processes
-- `_AIRFLOW_WWW_USER_USERNAME`: Web UI username
-- `_AIRFLOW_WWW_USER_PASSWORD`: Web UI password
-- `POSTGRES_USER`, `POSTGRES_PASSWORD`, `POSTGRES_DB`: PostgreSQL credentials
-
-### Pipeline Configuration
-
-Edit individual Python files to customize:
-- **Data Ingestion**: Modify `BASE_URL`, `OUTPUT_BASE_DIR` in `src/data_ingestion.py`
-- **Preprocessing**: Adjust filters and imputation logic in `src/data_preprocessing.py`
-- **Transformation**: Customize feature engineering in `src/data_transformation.py`
-
-## Metadata
-
-Each pipeline stage generates a `metadata.json` file containing:
-- Run information (timestamp, duration, status)
-- Input/output file paths and sizes
-- Data profile (row count, schema, null counts)
-- Column statistics for numerical fields
-
-## Development
-
-### Adding New DAGs
-
-1. Create a new Python file in `airflow/dags/`
-2. Define your DAG using Airflow operators
-3. Airflow will automatically detect and load the DAG
-
-### Troubleshooting
-
-**Airflow services not starting:**
-```bash
-# Check logs
-docker compose logs airflow-webserver
-docker compose logs airflow-scheduler
-
-# Verify permissions
-ls -la airflow/
-
-# Rebuild image if needed
-docker compose build --no-cache
-```
-
-**Import errors in DAGs:**
-```bash
-# Ensure src/ is mounted in docker-compose.yml
-# Check PYTHONPATH in Airflow container
-docker compose exec airflow-webserver python -c "import sys; print(sys.path)"
-
-# Verify packages are installed
-docker compose exec airflow-webserver pip list | grep pyspark
-```
-
-**PostgreSQL connection issues:**
-```bash
-# Verify PostgreSQL is healthy
-docker compose ps postgres
-docker compose logs postgres
-```
+---
 
 ## Tech Stack
 
-- **Apache Airflow 2.8.2**: Workflow orchestration
-- **Apache Spark 3.4.1**: Distributed data processing engine
-- **PySpark 3.4.1**: Python API for Spark
-- **PostgreSQL 16**: Airflow metadata database
-- **Java 17 (OpenJDK)**: Required for Spark execution
-- **Docker Compose**: Container orchestration
-- **Python 3.9+**: Core language
-- **AWS SDK / Hadoop AWS**: S3/MinIO connectivity
-- **DVC**: Data version control
-- **uv**: Package management (local development)
+| Layer | Technology |
+|-------|-----------|
+| Orchestration | Apache Airflow 2.8.2 |
+| Data processing | PySpark 3.4.1 |
+| Object storage | MinIO (S3-compatible) |
+| ML training | scikit-learn, LightGBM |
+| Hyperparameter tuning | Optuna |
+| Experiment tracking | MLflow on DagShub |
+| Drift detection | Evidently AI |
+| Inference API | FastAPI |
+| Monitoring | Prometheus + Grafana |
+| Load testing | Locust |
+| Containerization | Docker Compose |
 
-## License
+---
 
-This project is for educational and demonstration purposes.
+## Documentation
+
+- [Project Overview](docs/01-project-overview.md)
+- [Data Pipeline](docs/02-data-pipeline.md)
+- [ML Pipeline](docs/03-ml-pipeline.md)
+- [Inference & Monitoring](docs/04-inference-and-monitoring.md)
+- [AWS Deployment Guide](docs/05-aws-deployment.md)
+
+---
 
 ## Data Source
 
-NYC Taxi & Limousine Commission (TLC) Trip Record Data
-https://www.nyc.gov/site/tlc/about/tlc-trip-record-data.page
+[NYC Taxi & Limousine Commission (TLC) Trip Record Data](https://www.nyc.gov/site/tlc/about/tlc-trip-record-data.page)
