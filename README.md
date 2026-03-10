@@ -147,6 +147,58 @@ docker compose up inference-api locust
 
 ---
 
+## Load Test Results
+
+The system was tested using Locust with simulated concurrent users hitting all endpoints.
+
+### Locust Summary
+
+![Locust Results](docs/monitoring/locust.png)
+
+| Endpoint | Requests | Failures | Median | p95 | Avg |
+|----------|----------|----------|--------|-----|-----|
+| POST /predict | 1168 | 0 | 97ms | 440ms | 185ms |
+| POST /predict/batch | 452 | 0 | 120ms | 620ms | 204ms |
+| GET /health | 226 | 0 | 5ms | 430ms | 109ms |
+| GET /model/info | 234 | 0 | 5ms | 380ms | 97ms |
+| **Total** | **2080** | **0 (0%)** | 93ms | 470ms | 171ms |
+
+**7.2 requests/sec, zero failures across all endpoints.**
+
+---
+
+### Grafana: Overview and Traffic
+
+![Grafana Overview](docs/monitoring/grafana1.png)
+
+- **5665 total predictions** served during the test window with **100% success rate** and **0 errors**
+- p95 latency held at **206ms** throughout the load test
+- Request rate peaked at **~4 req/sec** across `/predict` and `/predict/batch`, then stabilized around 2 req/sec
+- Model was loaded and stayed healthy for the entire duration
+
+---
+
+### Grafana: Latency Breakdown
+
+![Grafana Latency](docs/monitoring/grafana2.png)
+
+- **p50 latency: ~200ms**, **p95: ~250ms**, **p99: started at ~500ms and dropped to ~250ms** as the system warmed up
+- Feature pipeline (pandas transformations) accounts for **~200ms p95** while the actual model inference is only **~50ms p95**
+- This means feature engineering is the bottleneck, not the model itself — the RandomForest prediction is fast, but computing 41 features on every request takes most of the time
+- Throughput peaked at **~4 predictions/sec** for single requests
+
+---
+
+### Grafana: Predictions
+
+![Grafana Predictions](docs/monitoring/grafana3.png)
+
+- Predicted trip durations follow a realistic distribution, concentrated between **20 and 60 minutes** with the peak around 40-50 minutes
+- **No prediction drift** detected — the current average closely tracks the 1-hour-ago average, meaning the model is producing stable and consistent results
+- Average batch size was **~13 trips per request**, trending slightly down from 13.2 to 12.6 over the test window
+
+---
+
 ## Project Structure
 
 ```
